@@ -7,7 +7,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.net.Uri;
 import android.text.format.DateUtils;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -55,10 +54,8 @@ public class ScribbleWidget extends AppWidgetProvider {
         RemoteViews v = new RemoteViews(c.getPackageName(), R.layout.widget);
         String link = Store.link(c);
 
-        // Tap the drawing -> open Scribbles in the browser to draw back.
-        Intent open = link != null
-                ? new Intent(Intent.ACTION_VIEW, Uri.parse(link))
-                : new Intent(c, MainActivity.class);
+        // Tap the drawing -> open the Scribbles app to draw back.
+        Intent open = new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         v.setOnClickPendingIntent(R.id.root, PendingIntent.getActivity(c, 1, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
 

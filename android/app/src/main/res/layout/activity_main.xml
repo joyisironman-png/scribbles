@@ -28,7 +28,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:lineSpacingExtra="3dp"
-            android:text="This app only powers your home-screen widget. Drawing happens in the Scribbles web app."
+            android:text="Settings. Your link connects this phone to Scribbles: the drawing app, the widget and notifications."
             android:textColor="@color/soft"
             android:textSize="15sp" />
 
@@ -123,7 +123,7 @@
                 android:layout_marginEnd="8dp"
                 android:background="@drawable/btn_light"
                 android:stateListAnimator="@null"
-                android:text="Open Scribbles"
+                android:text="Back to Scribbles"
                 android:textAllCaps="false"
                 android:textColor="@color/ink"
                 android:textStyle="bold" />

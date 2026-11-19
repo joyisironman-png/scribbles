@@ -1,5 +1,5 @@
 import { auth, json } from "@/lib/api";
-import { latestFor, getImage } from "@/lib/store";
+import { latestFor, getImage, dayOf, sentOn, remindOn } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -27,5 +27,10 @@ export async function GET(req) {
     createdAt: d?.createdAt ?? null,
     image: d ? `${origin}/api/image/${d.id}?k=${encodeURIComponent(k)}` : null,
     app: `${origin}/u/${encodeURIComponent(k)}`,
+    // Used by the Android app for its own 8 pm reminder.
+    today: dayOf(),
+    sentToday: await sentOn(dayOf(), a.me.id),
+    theyDrewToday: await sentOn(dayOf(), a.partner.id),
+    remind: await remindOn(a.me.id),
   });
 }

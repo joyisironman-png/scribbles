@@ -53,7 +53,7 @@ final class Store {
                 .putString("link", p[0] + "/u/" + p[1])
                 .putString("base", p[0])
                 .putString("key", p[1])
-                .remove("lastId").putBoolean("has", false)
+                .remove("lastId").remove("notifiedId").putBoolean("firstSync", true).putBoolean("has", false)
                 .apply();
         imageFile(c).delete();
     }
@@ -64,18 +64,21 @@ final class Store {
         return j.getJSONObject("me").getString("name");
     }
 
-    /** Fetches the latest doodle sent to you. Returns true if something changed. */
+    /** Fetches the latest doodle sent to you. Notifies about new ones and the evening reminder. */
     static boolean fetch(Context c) throws Exception {
         if (base(c) == null) return false;
         JSONObject j = new JSONObject(get(base(c) + "/api/widget?format=json&k=" + key(c) + "&t=" + System.currentTimeMillis()));
         SharedPreferences p = prefs(c);
         boolean has = j.optBoolean("has", false);
-        String id = has ? j.getString("id") : null;
         String fromName = j.optString("fromName", "");
+        p.edit().putString("fromName", fromName).apply();
+        maybeRemind(c, j, fromName);
+
         if (!has) {
-            p.edit().putBoolean("has", false).putString("fromName", fromName).apply();
+            p.edit().putBoolean("has", false).apply();
             return true;
         }
+        String id = j.getString("id");
         if (id.equals(p.getString("lastId", null)) && imageFile(c).exists()) return false;
 
         byte[] bytes = getBytes(j.getString("image"));
@@ -95,13 +98,39 @@ final class Store {
         }
         if (!tmp.renameTo(imageFile(c))) throw new IOException("Couldn't save image");
 
+        // Notify only about doodles that arrive after the first sync, and only once each.
+        String notified = p.getString("notifiedId", null);
+        boolean firstSync = p.getBoolean("firstSync", true);
+        if (!firstSync && !id.equals(notified) && !MainActivity.visible) Notifier.doodle(c, fromName, scaled);
+
         p.edit()
                 .putBoolean("has", true)
                 .putString("lastId", id)
-                .putString("fromName", fromName)
+                .putString("notifiedId", id)
+                .putBoolean("firstSync", false)
                 .putLong("createdAt", j.optLong("createdAt", System.currentTimeMillis()))
                 .apply();
         return true;
+    }
+
+    /** Called when the app is opened, so the doodle already on screen doesn't also ping. */
+    static void markCurrentAsSeen(Context c) {
+        SharedPreferences p = prefs(c);
+        String id = p.getString("lastId", null);
+        if (id != null) p.edit().putString("notifiedId", id).apply();
+    }
+
+    /** 8 pm–11 pm India time: one gentle ping if you haven't sent anything today. */
+    private static void maybeRemind(Context c, JSONObject j, String partner) {
+        if (!j.optBoolean("remind", true) || j.optBoolean("sentToday", false)) return;
+        java.util.Calendar now = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+        int hour = now.get(java.util.Calendar.HOUR_OF_DAY);
+        if (hour < 20 || hour >= 23) return;
+        String today = j.optString("today", "");
+        SharedPreferences p = prefs(c);
+        if (today.isEmpty() || today.equals(p.getString("remindedDay", null))) return;
+        p.edit().putString("remindedDay", today).apply();
+        Notifier.reminder(c, partner.isEmpty() ? "them" : partner, j.optBoolean("theyDrewToday", false));
     }
 
     /** Loads the saved doodle in a widget-friendly format (small enough for the launcher). */

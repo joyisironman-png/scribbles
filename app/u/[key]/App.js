@@ -49,6 +49,9 @@ export default function App({ k, me, partner }) {
   const [vapid, setVapid] = useState(null);
   const [tab, setTab] = useState("today");
   const [remind, setRemind] = useState(true);
+  const [platform, setPlatform] = useState("web"); // web | ios | android-app
+  const [widgetScript, setWidgetScript] = useState("");
+  const [widgetDone, setWidgetDone] = useState(false);
   const [, tick] = useState(0);
 
   const img = useCallback((id) => `/api/image/${id}?k=${encodeURIComponent(k)}`, [k]);
@@ -67,19 +70,37 @@ export default function App({ k, me, partner }) {
     const onVis = () => document.visibilityState === "visible" && load();
     document.addEventListener("visibilitychange", onVis);
     const clock = setInterval(() => tick((n) => n + 1), 30000);
-    return () => { clearInterval(t); clearInterval(clock); document.removeEventListener("visibilitychange", onVis); };
+    const onAppRefresh = () => {
+      load();
+      if (window.ScribblesAndroid) setPush(window.ScribblesAndroid.notificationsOn() ? "on" : "native-off");
+    };
+    window.addEventListener("scribbles-refresh", onAppRefresh);
+    return () => { clearInterval(t); clearInterval(clock); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("scribbles-refresh", onAppRefresh); };
   }, [load]);
 
   // Service worker + notification state.
   useEffect(() => {
     (async () => {
+      let vapidOk = false;
       try {
         const r = await fetch(`/api/me?k=${encodeURIComponent(k)}`);
         const j = await r.json();
         setVapid(j.vapidPublicKey);
         setRemind(j.remind !== false);
-        if (!j.vapidPublicKey) return setPush("off-server");
-      } catch (_) { return setPush("off-server"); }
+        vapidOk = Boolean(j.vapidPublicKey);
+      } catch (_) {}
+
+      // Inside the Android app: notifications are native, not web push.
+      if (window.ScribblesAndroid) {
+        setPlatform("android-app");
+        return setPush(window.ScribblesAndroid.notificationsOn() ? "on" : "native-off");
+      }
+      if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+        setPlatform("ios");
+        try { setWidgetDone(localStorage.getItem("scribbles-widget-done") === "1"); } catch (_) {}
+        fetch(`/api/scriptable?k=${encodeURIComponent(k)}`).then((r) => r.text()).then(setWidgetScript).catch(() => {});
+      }
+      if (!vapidOk) return setPush("off-server");
 
       if (!("serviceWorker" in navigator)) return setPush("unsupported");
       const reg = await navigator.serviceWorker.register("/sw.js");
@@ -98,6 +119,11 @@ export default function App({ k, me, partner }) {
   }, [k, load]);
 
   async function enablePush() {
+    if (window.ScribblesAndroid) {
+      window.ScribblesAndroid.enableNotifications();
+      setTimeout(() => setPush(window.ScribblesAndroid.notificationsOn() ? "on" : "native-off"), 4000);
+      return;
+    }
     try {
       const perm = await Notification.requestPermission();
       if (perm !== "granted") return setPush("denied");
@@ -121,6 +147,15 @@ export default function App({ k, me, partner }) {
     setRemind(next);
     await fetch("/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, remind: next }) });
     flash(next ? "Evening reminder on" : "Evening reminder off");
+  }
+
+  function copyWidgetScript() {
+    try {
+      navigator.clipboard.writeText(widgetScript);
+      flash("Copied. Now follow step 2 below");
+    } catch (_) {
+      flash("Couldn't copy. Try again");
+    }
   }
 
   function flash(msg) {
@@ -166,7 +201,7 @@ export default function App({ k, me, partner }) {
 
       {tab === "today" && <>
 
-      {push === "off" && (
+      {(push === "off" || push === "native-off") && (
         <button className="nudge" onClick={enablePush}>
           <span className="nudge-dot" />
           Get a ping when {partner.name} draws something
@@ -249,10 +284,35 @@ export default function App({ k, me, partner }) {
       <button className="remind-row" onClick={toggleRemind}>
         <span>
           <b>Evening reminder</b>
-          <span className="muted">One ping at 8 pm, only on days you haven&apos;t sent anything{push !== "on" ? ". Needs notifications on." : "."}</span>
+          <span className="muted">One ping at 8 pm, only on days you haven&apos;t sent anything{push !== "on" ? ". Turn on notifications first." : "."}</span>
         </span>
         <span className={`switch ${remind ? "on" : ""}`} aria-label={remind ? "On" : "Off"} />
       </button>
+
+      {platform === "android-app" && (
+        <div className="phone-row">
+          <button className="btn ghost" onClick={() => window.ScribblesAndroid.addWidget()}>Add widget</button>
+          <button className="btn ghost" onClick={() => window.ScribblesAndroid.openSettings()}>App settings</button>
+        </div>
+      )}
+
+      {platform === "ios" && !widgetDone && (
+        <section className="widget-card">
+          <h3>Put {partner.name}&apos;s doodles on your home screen</h3>
+          <ol>
+            <li>
+              <span>Copy your widget script. Your link is already inside it.</span>
+              <button className="btn primary small-btn" disabled={!widgetScript} onClick={copyWidgetScript}>Copy widget script</button>
+            </li>
+            <li>Get the free <b>Scriptable</b> app from the App Store. Open it, tap <b>+</b>, paste, and name the script <b>Scribbles</b> at the top.</li>
+            <li>Long-press your home screen → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b>. Choose the square size and add it.</li>
+            <li>Long-press the new widget → <b>Edit Widget</b>. Set <b>Script</b> to Scribbles and <b>When Interacting</b> to Open URL.</li>
+          </ol>
+          <button className="link" onClick={() => { setWidgetDone(true); try { localStorage.setItem("scribbles-widget-done", "1"); } catch (_) {} }}>
+            Done, hide this
+          </button>
+        </section>
+      )}
       </>}
 
       {viewing && (
@@ -301,6 +361,11 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn }) {
   async function share() {
     try {
       const blob = await (await fetch(src)).blob();
+      if (window.ScribblesAndroid) {
+        const reader = new FileReader();
+        reader.onload = () => window.ScribblesAndroid.saveImage(reader.result);
+        return reader.readAsDataURL(blob);
+      }
       const file = new File([blob], `scribble-${d.id}.png`, { type: blob.type });
       if (navigator.canShare?.({ files: [file] })) return navigator.share({ files: [file] });
       const a = document.createElement("a");
