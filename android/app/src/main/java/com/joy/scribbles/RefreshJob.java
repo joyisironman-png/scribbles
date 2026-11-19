@@ -15,19 +15,26 @@ public class RefreshJob extends JobService {
     static void schedulePeriodic(Context c) {
         JobScheduler js = c.getSystemService(JobScheduler.class);
         if (js == null || js.getPendingJob(PERIODIC_ID) != null) return;
-        js.schedule(new JobInfo.Builder(PERIODIC_ID, new ComponentName(c, RefreshJob.class))
-                .setPeriodic(15 * 60 * 1000L)
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setPersisted(true)
-                .build());
+        try {
+            js.schedule(new JobInfo.Builder(PERIODIC_ID, new ComponentName(c, RefreshJob.class))
+                    .setPeriodic(15 * 60 * 1000L)
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setPersisted(true)
+                    .build());
+        } catch (RuntimeException ignored) {
+            // Background refresh is a bonus; the widget still updates on tap.
+        }
     }
 
     static void runNow(Context c) {
         JobScheduler js = c.getSystemService(JobScheduler.class);
         if (js == null) return;
-        js.schedule(new JobInfo.Builder(NOW_ID, new ComponentName(c, RefreshJob.class))
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .build());
+        try {
+            js.schedule(new JobInfo.Builder(NOW_ID, new ComponentName(c, RefreshJob.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .build());
+        } catch (RuntimeException ignored) {
+        }
     }
 
     static void cancelAll(Context c) {
