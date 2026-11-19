@@ -20,5 +20,5 @@ export default async function Page({ params }) {
       </main>
     );
   }
-  return <App k={key} me={publicUser(me)} partner={publicUser(partnerOf(me.id))} />;
+  return <App k={key} me={publicUser(me)} partner={publicUser(partnerOf(me.id))} build={process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || "dev"} />;
 }

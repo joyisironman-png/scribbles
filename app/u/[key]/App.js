@@ -34,7 +34,7 @@ function b64ToBytes(b64) {
 
 /* ───────────────────────── App ───────────────────────── */
 
-export default function App({ k, me, partner }) {
+export default function App({ k, me, partner, build }) {
   const [doodles, setDoodles] = useState(null);
   const [drawing, setDrawing] = useState(null); // null | { base: url|null }
   const [viewing, setViewing] = useState(null); // { list, i }
@@ -50,6 +50,18 @@ export default function App({ k, me, partner }) {
 
   const img = useCallback((id) => `/api/image/${id}?k=${encodeURIComponent(k)}`, [k]);
 
+  // After an update, any copy left open (Android app, home-screen app, tabs) reloads itself,
+  // but never in the middle of drawing.
+  const drawingRef = useRef(false);
+  drawingRef.current = Boolean(drawing);
+  const checkVersion = useCallback(async () => {
+    try {
+      const r = await fetch("/api/version", { cache: "no-store" });
+      const j = await r.json();
+      if (j.build && build && j.build !== build && !drawingRef.current) location.reload();
+    } catch (_) {}
+  }, [build]);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/doodles?k=${encodeURIComponent(k)}&limit=300`, { cache: "no-store" });
@@ -61,16 +73,18 @@ export default function App({ k, me, partner }) {
   useEffect(() => {
     load();
     const t = setInterval(() => document.visibilityState === "visible" && load(), 15000);
-    const onVis = () => document.visibilityState === "visible" && load();
+    const v = setInterval(() => document.visibilityState === "visible" && checkVersion(), 120000);
+    const onVis = () => { if (document.visibilityState === "visible") { load(); checkVersion(); } };
     document.addEventListener("visibilitychange", onVis);
     const clock = setInterval(() => tick((n) => n + 1), 30000);
     const onAppRefresh = () => {
       load();
+      checkVersion();
       if (window.ScribblesAndroid) setPush(window.ScribblesAndroid.notificationsOn() ? "on" : "native-off");
     };
     window.addEventListener("scribbles-refresh", onAppRefresh);
-    return () => { clearInterval(t); clearInterval(clock); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("scribbles-refresh", onAppRefresh); };
-  }, [load]);
+    return () => { clearInterval(t); clearInterval(v); clearInterval(clock); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("scribbles-refresh", onAppRefresh); };
+  }, [load, checkVersion]);
 
   // Service worker + notification state.
   useEffect(() => {
