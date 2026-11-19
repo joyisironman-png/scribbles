@@ -43,17 +43,19 @@ function b64ToBytes(b64) {
 export default function App({ k, me, partner }) {
   const [doodles, setDoodles] = useState(null);
   const [drawing, setDrawing] = useState(null); // null | { base: url|null }
-  const [viewing, setViewing] = useState(null);
+  const [viewing, setViewing] = useState(null); // { list, i }
   const [toast, setToast] = useState("");
   const [push, setPush] = useState("checking");
   const [vapid, setVapid] = useState(null);
+  const [tab, setTab] = useState("today");
+  const [remind, setRemind] = useState(true);
   const [, tick] = useState(0);
 
   const img = useCallback((id) => `/api/image/${id}?k=${encodeURIComponent(k)}`, [k]);
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`/api/doodles?k=${encodeURIComponent(k)}&limit=90`, { cache: "no-store" });
+      const r = await fetch(`/api/doodles?k=${encodeURIComponent(k)}&limit=300`, { cache: "no-store" });
       if (r.ok) setDoodles((await r.json()).doodles);
     } catch (_) {}
   }, [k]);
@@ -75,6 +77,7 @@ export default function App({ k, me, partner }) {
         const r = await fetch(`/api/me?k=${encodeURIComponent(k)}`);
         const j = await r.json();
         setVapid(j.vapidPublicKey);
+        setRemind(j.remind !== false);
         if (!j.vapidPublicKey) return setPush("off-server");
       } catch (_) { return setPush("off-server"); }
 
@@ -113,6 +116,13 @@ export default function App({ k, me, partner }) {
     }
   }
 
+  async function toggleRemind() {
+    const next = !remind;
+    setRemind(next);
+    await fetch("/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, remind: next }) });
+    flash(next ? "Evening reminder on" : "Evening reminder off");
+  }
+
   function flash(msg) {
     setToast(msg);
     setTimeout(() => setToast(""), 2600);
@@ -145,6 +155,17 @@ export default function App({ k, me, partner }) {
         </div>
       </header>
 
+      <nav className="tabs">
+        <button className={tab === "today" ? "on" : ""} onClick={() => setTab("today")}>Today</button>
+        <button className={tab === "album" ? "on" : ""} onClick={() => setTab("album")}>
+          Album{doodles?.length ? <span className="count">{doodles.length}</span> : null}
+        </button>
+      </nav>
+
+      {tab === "album" && <Album doodles={doodles} me={me} partner={partner} img={img} open={(list, i) => setViewing({ list, i })} />}
+
+      {tab === "today" && <>
+
       {push === "off" && (
         <button className="nudge" onClick={enablePush}>
           <span className="nudge-dot" />
@@ -168,7 +189,7 @@ export default function App({ k, me, partner }) {
         {doodles === null ? (
           <div className="frame skeleton" />
         ) : received ? (
-          <button className="frame tilt" onClick={() => setViewing(received)} aria-label="Open doodle">
+          <button className="frame tilt" onClick={() => setViewing({ list: [received], i: 0 })} aria-label="Open doodle">
             <span className="tape" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={img(received.id)} alt={`Doodle from ${partner.name}`} />
@@ -206,15 +227,15 @@ export default function App({ k, me, partner }) {
       {doodles?.length > 0 && (
         <section className="wall">
           <h2>
-            Our wall <span className="muted">{doodles.length}</span>
+            Recently <button className="link" onClick={() => setTab("album")}>Open album →</button>
           </h2>
           <div className="grid">
-            {doodles.map((d, i) => (
+            {doodles.slice(0, 6).map((d, i) => (
               <button
                 key={d.id}
                 className={`polaroid ${d.from === me.id ? "mine" : "theirs"}`}
                 style={{ "--r": `${((i * 37) % 7) - 3}deg` }}
-                onClick={() => setViewing(d)}
+                onClick={() => setViewing({ list: doodles, i })}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={img(d.id)} alt="" loading="lazy" />
@@ -225,15 +246,26 @@ export default function App({ k, me, partner }) {
         </section>
       )}
 
+      <button className="remind-row" onClick={toggleRemind}>
+        <span>
+          <b>Evening reminder</b>
+          <span className="muted">One ping at 8 pm, only on days you haven&apos;t sent anything{push !== "on" ? ". Needs notifications on." : "."}</span>
+        </span>
+        <span className={`switch ${remind ? "on" : ""}`} aria-label={remind ? "On" : "Off"} />
+      </button>
+      </>}
+
       {viewing && (
         <Viewer
-          d={viewing}
-          src={img(viewing.id)}
+          list={viewing.list}
+          i={viewing.i}
+          setI={(i) => setViewing((v) => ({ ...v, i }))}
+          img={img}
           me={me}
           partner={partner}
           onClose={() => setViewing(null)}
-          onDrawOn={() => {
-            setDrawing({ base: img(viewing.id) });
+          onDrawOn={(d) => {
+            setDrawing({ base: img(d.id) });
             setViewing(null);
           }}
         />
@@ -248,8 +280,24 @@ export default function App({ k, me, partner }) {
 
 /* ───────────────────────── Viewer ───────────────────────── */
 
-function Viewer({ d, src, me, partner, onClose, onDrawOn }) {
+function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn }) {
+  const d = list[i];
+  const src = img(d.id);
   const mine = d.from === me.id;
+  const touch = useRef(null);
+  const prev = () => i > 0 && setI(i - 1);
+  const next = () => i < list.length - 1 && setI(i + 1);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "ArrowLeft") prev();
+      if (e.key === "ArrowRight") next();
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   async function share() {
     try {
       const blob = await (await fetch(src)).blob();
@@ -263,23 +311,138 @@ function Viewer({ d, src, me, partner, onClose, onDrawOn }) {
   }
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="viewer" onClick={(e) => e.stopPropagation()}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={src} alt="" />
+      <div
+        className="viewer"
+        onClick={(e) => e.stopPropagation()}
+        onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
+        onTouchEnd={(e) => {
+          const dx = e.changedTouches[0].clientX - (touch.current ?? 0);
+          if (dx > 50) prev();
+          if (dx < -50) next();
+        }}
+      >
+        <div className="viewer-img">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img key={d.id} src={src} alt="" />
+          {list.length > 1 && (
+            <>
+              <button className="nav-arrow left" onClick={prev} disabled={i === 0} aria-label="Newer">‹</button>
+              <button className="nav-arrow right" onClick={next} disabled={i === list.length - 1} aria-label="Older">›</button>
+            </>
+          )}
+        </div>
         <div className="viewer-meta">
           <b>{mine ? `You → ${partner.name}` : `${partner.name} → you`}</b>
           <span className="muted">
             {when(d.createdAt)}
             {mine && (d.seenAt ? ` · seen ${ago(d.seenAt)}` : " · delivered")}
+            {list.length > 1 && ` · ${i + 1} of ${list.length}`}
           </span>
         </div>
         <div className="viewer-actions">
-          <button className="btn primary" onClick={onDrawOn}>Draw on this</button>
+          <button className="btn primary" onClick={() => onDrawOn(d)}>Draw on this</button>
           <button className="btn ghost" onClick={share}>Save</button>
           <button className="btn ghost" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>
+  );
+}
+
+/* ───────────────────────── Album ───────────────────────── */
+
+// Each month is a folder. The newest starts open; tap a folder and its doodles fan out.
+function Album({ doodles, me, partner, img, open }) {
+  const [openSet, setOpenSet] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const list = useMemo(
+    () => (doodles || []).filter((d) => filter === "all" || (filter === "mine" ? d.from === me.id : d.from !== me.id)),
+    [doodles, filter, me.id]
+  );
+  const months = useMemo(() => {
+    const m = new Map();
+    list.forEach((d) => {
+      const key = new Date(d.createdAt).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+      if (!m.has(key)) m.set(key, []);
+      m.get(key).push(d);
+    });
+    return [...m.entries()];
+  }, [list]);
+  const opened = openSet || new Set(months.length ? [months[0][0]] : []);
+
+  if (doodles === null) return <div className="frame skeleton" />;
+  if (!doodles.length)
+    return (
+      <div className="frame empty">
+        <p className="empty-title">An empty album</p>
+        <p className="muted">Every doodle you two send each other gathers here, month by month.</p>
+      </div>
+    );
+
+  const toggle = (m) => {
+    const s = new Set(opened);
+    s.has(m) ? s.delete(m) : s.add(m);
+    setOpenSet(s);
+    navigator.vibrate?.(6);
+  };
+
+  return (
+    <section className="album">
+      <div className="filters">
+        {[["all", "All"], ["theirs", `From ${partner.name}`], ["mine", "From you"]].map(([v, l]) => (
+          <button key={v} className={`chip ${filter === v ? "on" : ""}`} onClick={() => setFilter(v)}>{l}</button>
+        ))}
+      </div>
+      {!months.length && <p className="muted center">Nothing here yet.</p>}
+      {months.map(([m, items]) => {
+        const tally = {};
+        items.forEach((d) => { const c = d.bg && d.bg !== "#1E2233" ? d.bg : "#F3E6D3"; tally[c] = (tally[c] || 0) + (c === "#F3E6D3" ? 0.5 : 1); });
+        const tint = Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
+        const mineN = items.filter((d) => d.from === me.id).length;
+        const theirN = items.length - mineN;
+        const isOpen = opened.has(m);
+        const [mon, yr] = m.split(" ");
+        return (
+          <section key={m} className={`album-month ${isOpen ? "open" : ""}`} style={{ "--c": tint }}>
+            <button className="folder" aria-expanded={isOpen} onClick={() => toggle(m)}>
+              <div className="fback" />
+              <div className="fan">
+                {items.slice(0, 3).map((d) => (
+                  <div key={d.id} className="peek">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img(d.id)} alt="" loading="lazy" />
+                  </div>
+                ))}
+              </div>
+              <div className="ffront">
+                <div>
+                  <div className="mt">{mon} <span>{yr}</span></div>
+                  <div className="mc">
+                    {items.length} doodle{items.length > 1 ? "s" : ""}
+                    {theirN > 0 && <span><i className="dot theirs" />{partner.name} {theirN}</span>}
+                    {mineN > 0 && <span><i className="dot mine" />you {mineN}</span>}
+                  </div>
+                </div>
+                <span className="chev">›</span>
+              </div>
+            </button>
+            {isOpen && (
+              <div className="agrid">
+                {items.map((d) => (
+                  <button key={d.id} className={`tile ${d.from === me.id ? "mine" : "theirs"}`} onClick={() => open(list, list.indexOf(d))}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img(d.id)} alt="" loading="lazy" />
+                    <span className="day">{new Date(d.createdAt).getDate()}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
+      <p className="muted center small">The dot shows who drew it. Tap any doodle to flip through.</p>
+    </section>
   );
 }
 
@@ -457,7 +620,7 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
       const r = await fetch("/api/doodles", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ k, image: data }),
+        body: JSON.stringify({ k, image: data, bg: base ? null : paper }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't send");
       onSent((await r.json()).doodle);

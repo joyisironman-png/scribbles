@@ -43,6 +43,10 @@ OnePlus battery saving can pause it. If that happens, go to **Settings → Apps 
 
 ---
 
+### Reminders and album
+- **Evening reminder:** at 8 pm IST a Vercel cron (`/api/cron`) pings only whoever hasn't sent a doodle that day. If the other person did draw something, the ping says so. Each person can switch it off on the Today tab.
+- **Album:** every doodle, grouped into month folders that fan open, with *All / From them / From you* filters. Tap any doodle to swipe through them.
+
 ### How it works
 - `POST /api/doodles` saves a 900×900 PNG and sends a web push to the other person.
 - `GET /api/widget?k=KEY&format=json|png` returns the latest doodle sent **to** you. Both widgets use this.

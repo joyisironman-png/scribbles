@@ -10,7 +10,7 @@ export async function GET(req) {
   const p = new URL(req.url).searchParams;
   const a = auth(p.get("k"));
   if (!a) return json({ error: "bad key" }, 401);
-  const limit = Math.min(Number(p.get("limit")) || 60, 300);
+  const limit = Math.min(Number(p.get("limit")) || 300, 300);
   return json({ doodles: await recent(limit) });
 }
 
@@ -24,7 +24,8 @@ export async function POST(req) {
   if (!m) return json({ error: "image must be a png/jpeg/webp data URL" }, 400);
   if (m[2].length > MAX_BYTES) return json({ error: "drawing too large" }, 413);
 
-  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: body.image });
+  const bg = /^#[0-9A-Fa-f]{6}$/.test(body.bg || "") ? body.bg : null;
+  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: body.image, bg });
   await notify(a.partner.id, {
     title: `${a.me.name} sent you a doodle`,
     body: "Tap to see it ✏️",
