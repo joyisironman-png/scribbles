@@ -560,45 +560,63 @@ function Album({ doodles, me, partner, img, open }) {
 const QUICK_REACTS = ["❤️", "😂", "😮", "😢", "🙏", "👍"];
 const MORE_REACTS = ["🥹", "😍", "🥰", "😘", "🫶", "💕", "💖", "🔥", "✨", "🎉", "😭", "🤣", "😅", "😳", "🙈", "😴", "🤍", "💯", "👏", "🙌", "💐", "🌸", "🌙", "⭐", "🎶", "🍫", "☕", "🧸", "🤗", "😌", "🤭", "😤", "🥺", "💀", "👀", "🤞"];
 
-// The record on a picture: tap it and the song plays inside the spinning circle.
+// The record on a picture. The YouTube player sits ready inside the circle, so the tap lands
+// on the player itself: iPhones only allow sound when the tap is on the player.
+let ytSeq = 0;
 function MusicSpot({ d }) {
   const m = d.music;
-  const [on, setOn] = useState(false);
   const ref = useRef(null);
+  const frameRef = useRef(null);
   const [px, setPx] = useState(100);
+  const [playing, setPlaying] = useState(false);
+  const [id] = useState(() => `yt${++ytSeq}`);
+
   useEffect(() => {
     if (!ref.current) return;
     const ro = new ResizeObserver(() => setPx(ref.current?.offsetWidth || 100));
     ro.observe(ref.current);
     return () => ro.disconnect();
   }, []);
+
+  // Listen to the player so the record spins only while the song plays.
+  useEffect(() => {
+    const onMsg = (e) => {
+      if (!/youtube(-nocookie)?\.com$/.test(new URL(e.origin).hostname)) return;
+      if (e.source !== frameRef.current?.contentWindow) return;
+      let data;
+      try { data = typeof e.data === "string" ? JSON.parse(e.data) : e.data; } catch (_) { return; }
+      const state = data?.event === "onStateChange" ? data.info : data?.info?.playerState;
+      if (state === 1) setPlaying(true);
+      else if (state === 0 || state === 2) setPlaying(false);
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
   if (!m) return null;
   const pct = (v) => `${(v / SIZE) * 100}%`;
-  // YouTube needs a 200px player, so it's laid out at that size and scaled to the circle.
-  const scale = px / 200;
+  const scale = px / 200; // YouTube wants at least a 200px player: lay it out at 200 and shrink it to the circle
+  const origin = typeof window !== "undefined" ? encodeURIComponent(location.origin) : "";
   return (
     <div
       ref={ref}
-      className={`music-spot ${on ? "on" : ""}`}
+      className={`music-spot ready ${playing ? "playing" : ""}`}
       style={{ left: pct(m.x - m.r), top: pct(m.y - m.r), width: pct(m.r * 2) }}
-      onClick={(e) => { e.stopPropagation(); setOn(true); }}
+      onClick={(e) => e.stopPropagation()}
       title={`${m.title}${m.author ? " · " + m.author : ""}`}
     >
-      {on ? (
-        <>
-          <div className="ms-disc">
-            <iframe
-              title={m.title}
-              src={`https://www.youtube-nocookie.com/embed/${m.id}?autoplay=1&playsinline=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${m.id}`}
-              allow="autoplay; encrypted-media"
-              style={{ width: 356, height: 200, transform: `translate(-50%, -50%) scale(${scale})` }}
-            />
-          </div>
-          <button className="ms-stop" onClick={(e) => { e.stopPropagation(); setOn(false); }} aria-label="Stop">■</button>
-        </>
-      ) : (
-        <span className="ms-play" aria-label={`Play ${m.title}`}>▶</span>
-      )}
+      <div className="ms-disc">
+        <iframe
+          ref={frameRef}
+          id={id}
+          title={m.title}
+          src={`https://www.youtube-nocookie.com/embed/${m.id}?enablejsapi=1&origin=${origin}&playsinline=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${m.id}`}
+          allow="autoplay; encrypted-media"
+          onLoad={() => frameRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "listening", id, channel: "widget" }), "*")}
+          style={{ width: 356, height: 200, transform: `translate(-50%, -50%) scale(${scale})` }}
+        />
+      </div>
+      {!playing && <span className="ms-hint">tap to play</span>}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { GESTURES as G } from "@/lib/gestures";
 
 /*
   The Scribbles editor, Instagram-story style:
@@ -45,14 +46,27 @@ const BRUSHES = [
   { id: "erase", name: "Eraser", hint: "Rub out ink" },
 ];
 export const FONTS = [
-  { id: "hand", name: "Handwritten", css: '600 {s}px Caveat, "Bradley Hand", cursive', family: "Caveat", lh: 1.05 },
-  { id: "classic", name: "Classic", css: 'italic 700 {s}px "Playfair Display", Georgia, serif', family: "Playfair Display", lh: 1.15 },
-  { id: "script", name: "Script", css: '400 {s}px Pacifico, "Snell Roundhand", cursive', family: "Pacifico", lh: 1.3 },
-  { id: "modern", name: "Modern", css: '700 {s}px "DM Sans", -apple-system, sans-serif', family: "DM Sans", lh: 1.12 },
-  { id: "bold", name: "Bold", css: '400 {s}px "Bebas Neue", Impact, sans-serif', family: "Bebas Neue", lh: 1.02 },
-  { id: "type", name: "Typewriter", css: '400 {s}px "Special Elite", "Courier New", monospace', family: "Special Elite", lh: 1.2 },
+  { id: "classic", name: "Classic", css: '700 {s}px "DM Sans", -apple-system, sans-serif', lh: 1.12 },
+  { id: "modern", name: "Modern", css: '700 {s}px "Space Grotesk", "Helvetica Neue", sans-serif', lh: 1.1 },
+  { id: "hand", name: "Handwritten", css: '600 {s}px Caveat, "Bradley Hand", cursive', lh: 1.02 },
+  { id: "elegant", name: "Elegant", css: '700 {s}px "Dancing Script", "Snell Roundhand", cursive', lh: 1.1 },
+  { id: "script", name: "Script", css: '400 {s}px Pacifico, "Snell Roundhand", cursive', lh: 1.3 },
+  { id: "editor", name: "Editor", css: 'italic 700 {s}px "Playfair Display", Georgia, serif', lh: 1.15 },
+  { id: "poster", name: "Poster", css: '400 {s}px "Abril Fatface", Georgia, serif', lh: 1.1 },
+  { id: "strong", name: "Strong", css: '400 {s}px "Bebas Neue", Impact, sans-serif', lh: 1.0 },
+  { id: "bubble", name: "Bubble", css: '700 {s}px Comfortaa, "Arial Rounded MT Bold", sans-serif', lh: 1.15 },
+  { id: "retro", name: "Retro", css: '400 {s}px Righteous, "Arial Black", sans-serif', lh: 1.1 },
+  { id: "marker", name: "Marker", css: '400 {s}px "Permanent Marker", "Marker Felt", cursive', lh: 1.15 },
+  { id: "type", name: "Typewriter", css: '400 {s}px "Special Elite", "Courier New", monospace', lh: 1.2 },
 ];
-const fontOf = (id) => FONTS.find((f) => f.id === id) || FONTS[0];
+const TEXT_STYLES = [
+  { id: "plain", label: "A", name: "Plain" },
+  { id: "pill", label: "A", name: "Box" },
+  { id: "outline", label: "A", name: "Outline" },
+  { id: "neon", label: "A", name: "Neon" },
+  { id: "shadow", label: "A", name: "Shadow" },
+];
+const fontOf = (id) => FONTS.find((f) => f.id === id) || FONTS.find((f) => f.id === "hand");
 const STICKERS = ["❤️", "💕", "💌", "✨", "⭐", "🌙", "☀️", "🌸", "🌷", "🌻", "🦋", "🎀", "🍓", "🍒", "☕", "🧸", "😘", "🥹", "😂", "😍", "🫶", "👀", "🔥", "🎶"];
 const FILTERS = [
   { id: "none", name: "Original" },
@@ -216,6 +230,13 @@ const TEXT_BASE = 64;
 const STICKER_BASE = 130;
 const RECORD_R = 120;
 
+// Neon: a pale core in the chosen colour, with the colour as the glow.
+function neonCore(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const m = (c) => Math.round(c + (255 - c) * 0.72);
+  return `rgb(${m(n >> 16)},${m((n >> 8) & 255)},${m(n & 255)})`;
+}
+
 function textLines(o) { return (o.text || " ").split("\n"); }
 
 // Draw one movable object onto the export canvas, matching what's on screen.
@@ -232,14 +253,16 @@ function paintObject(ctx, o) {
     ctx.fillText(o.emoji, 0, 0);
   } else if (o.type === "text") {
     const f = fontOf(o.font);
-    const s = TEXT_BASE;
+    const s = o.fs || TEXT_BASE;
     ctx.font = f.css.replace("{s}", s);
-    ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const lines = textLines(o);
     const lh = s * f.lh;
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width));
     const h = lines.length * lh;
+    const align = o.align || "center";
+    ctx.textAlign = align;
+    const x = align === "left" ? -w / 2 : align === "right" ? w / 2 : 0;
     if (o.style === "pill") {
       const px = s * 0.45, py = s * 0.22;
       ctx.fillStyle = o.color;
@@ -252,10 +275,15 @@ function paintObject(ctx, o) {
         ctx.lineJoin = "round";
         ctx.lineWidth = s * 0.16;
         ctx.strokeStyle = contrastOn(o.color) === "#FFFFFF" ? "#FFFFFF" : "#1F1B18";
-        ctx.strokeText(line, 0, y);
+        ctx.strokeText(line, x, y);
       }
-      ctx.fillStyle = o.style === "pill" ? contrastOn(o.color) : o.color;
-      ctx.fillText(line, 0, y);
+      ctx.save();
+      if (o.style === "neon") { ctx.shadowColor = o.color; ctx.shadowBlur = s * 0.45; }
+      if (o.style === "shadow") { ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = s * 0.14; ctx.shadowOffsetY = s * 0.06; }
+      ctx.fillStyle = o.style === "pill" ? contrastOn(o.color) : o.style === "neon" ? neonCore(o.color) : o.color;
+      ctx.fillText(line, x, y);
+      if (o.style === "neon") ctx.fillText(line, x, y); // second pass for a stronger glow
+      ctx.restore();
     });
   } else if (o.type === "music") {
     drawRecord(ctx, o);
@@ -375,22 +403,42 @@ function Palette({ color, onPick, recents }) {
 }
 
 function TextEditor({ initial, onDone, onCancel, recents, onColor }) {
-  const [t, setT] = useState(initial);
+  const [t, setT] = useState({ fs: TEXT_BASE, align: "center", ...initial });
+  const [panel, setPanel] = useState("fonts"); // fonts | colors
   const f = fontOf(t.font);
-  const fg = t.style === "pill" ? contrastOn(t.color) : t.color;
+  const fg = t.style === "pill" ? contrastOn(t.color) : t.style === "neon" ? neonCore(t.color) : t.color;
+  const shown = Math.round(t.fs * 0.62);
+  const nextStyle = () => setT({ ...t, style: TEXT_STYLES[(TEXT_STYLES.findIndex((x) => x.id === t.style) + 1) % TEXT_STYLES.length].id });
+  const nextAlign = () => setT({ ...t, align: t.align === "center" ? "left" : t.align === "left" ? "right" : "center" });
+  const styleName = TEXT_STYLES.find((x) => x.id === t.style)?.name;
   return (
     <div className="text-editor">
       <div className="te-top">
-        <button className="chip" onClick={onCancel}>Cancel</button>
-        <button
-          className="chip style-toggle"
-          onClick={() => setT({ ...t, style: t.style === "plain" ? "pill" : t.style === "pill" ? "outline" : "plain" })}
-        >
-          {t.style === "plain" ? "A  Plain" : t.style === "pill" ? "▣  Box" : "◌  Outline"}
-        </button>
-        <button className="chip on" onClick={() => onDone(t)}>Done</button>
+        <button className="te-link" onClick={onCancel}>Cancel</button>
+        <div className="te-icons">
+          <button className="te-icon" onClick={nextAlign} aria-label={`Align ${t.align}`} title="Alignment">
+            <span className={`align-ico ${t.align}`}><i /><i /><i /></span>
+          </button>
+          <button className={`te-icon style-${t.style}`} onClick={nextStyle} aria-label={`Style: ${styleName}`} title={styleName}>A</button>
+          <button
+            className={`te-icon color-dot ${panel === "colors" ? "on" : ""}`}
+            style={{ "--c": t.color }}
+            onClick={() => setPanel(panel === "colors" ? "fonts" : "colors")}
+            aria-label="Colour"
+          />
+        </div>
+        <button className="te-done" onClick={() => onDone(t)}>Done</button>
       </div>
       <div className="te-stage">
+        <input
+          className="te-size"
+          type="range"
+          min="28"
+          max="150"
+          value={t.fs}
+          onChange={(e) => setT({ ...t, fs: Number(e.target.value) })}
+          aria-label="Text size"
+        />
         <textarea
           autoFocus
           value={t.text}
@@ -398,24 +446,29 @@ function TextEditor({ initial, onDone, onCancel, recents, onColor }) {
           onChange={(e) => setT({ ...t, text: e.target.value })}
           rows={Math.max(1, t.text.split("\n").length)}
           style={{
-            font: f.css.replace("{s}", 40),
+            font: f.css.replace("{s}", shown),
             lineHeight: f.lh,
+            textAlign: t.align,
             color: fg,
             background: t.style === "pill" ? t.color : "transparent",
-            WebkitTextStroke: t.style === "outline" ? `5px ${contrastOn(t.color) === "#FFFFFF" ? "#fff" : "#1F1B18"}` : "0",
+            WebkitTextStroke: t.style === "outline" ? `${shown * 0.12}px ${contrastOn(t.color) === "#FFFFFF" ? "#fff" : "#1F1B18"}` : "0",
+            textShadow: t.style === "neon" ? `0 0 ${shown * 0.3}px ${t.color}, 0 0 ${shown * 0.6}px ${t.color}` : t.style === "shadow" ? `0 ${shown * 0.06}px ${shown * 0.14}px rgba(0,0,0,.5)` : "none",
             paintOrder: "stroke fill",
           }}
         />
       </div>
       <div className="te-bottom">
-        <div className="fonts">
-          {FONTS.map((x) => (
-            <button key={x.id} className={`font-chip ${t.font === x.id ? "on" : ""}`} style={{ font: x.css.replace("{s}", 17) }} onClick={() => setT({ ...t, font: x.id })}>
-              {x.name}
-            </button>
-          ))}
-        </div>
-        <Palette color={t.color} recents={recents} onPick={(c) => { setT({ ...t, color: c }); onColor(c); }} />
+        {panel === "fonts" ? (
+          <div className="fonts">
+            {FONTS.map((x) => (
+              <button key={x.id} className={`font-chip ${t.font === x.id ? "on" : ""}`} style={{ font: x.css.replace("{s}", 16) }} onClick={() => setT({ ...t, font: x.id })}>
+                {x.name}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <Palette color={t.color} recents={recents} onPick={(c) => { setT({ ...t, color: c }); onColor(c); }} />
+        )}
       </div>
     </div>
   );
@@ -697,57 +750,104 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
     setCount((c) => c + 1);
   }
   function addText(x = SIZE / 2, y = SIZE / 2) {
-    setEditing({ id: null, text: "", font: "hand", color: color === "#FFFFFF" && paper !== NIGHT ? "#1F1B18" : color, style: "plain", x, y });
+    setEditing({ id: null, text: "", font: "classic", fs: TEXT_BASE, align: "center", color: color === "#FFFFFF" && paper !== NIGHT ? "#1F1B18" : color, style: "plain", x, y });
   }
   function finishText(t) {
     const text = t.text.replace(/\s+$/, "");
     if (t.id) {
-      if (text) updateObject(t.id, { text, font: t.font, color: t.color, style: t.style });
+      if (text) updateObject(t.id, { text, font: t.font, color: t.color, style: t.style, fs: t.fs, align: t.align });
       else removeObject(t.id);
     } else if (text) {
-      addObject({ type: "text", text, font: t.font, color: t.color, style: t.style, x: t.x, y: t.y });
+      addObject({ type: "text", text, font: t.font, color: t.color, style: t.style, fs: t.fs, align: t.align, x: t.x, y: t.y });
     }
     setEditing(null);
   }
 
-  // Drag with one finger; pinch/twist with two; corner handle scales & turns with a mouse.
+  /*
+    Gestures (rules in lib/gestures.js):
+    one finger drags, two fingers pinch & twist (second finger can land anywhere),
+    a clean tap on text opens it, dragging onto the bin deletes.
+  */
+  const [guides, setGuides] = useState({ v: false, h: false });
+  const [trash, setTrash] = useState({ show: false, hot: false });
+  const buzz = () => navigator.vibrate?.(G.hapticMs);
+
+  function snapshot(id, g) {
+    g.start = { ...objRef.current.find((x) => x.id === id), pts: new Map(g.pts) };
+  }
+
   function objDown(e, o, mode = "move") {
     e.stopPropagation();
     e.preventDefault();
     setSelected(o.id);
-    const now = Date.now();
-    if (mode === "move" && o.type === "text" && lastTap.current.id === o.id && now - lastTap.current.t < 320) {
-      setEditing({ ...o });
-      return;
-    }
-    lastTap.current = { id: o.id, t: now };
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-    const g = gesture.current?.kind === "obj" && gesture.current.id === o.id ? gesture.current : { kind: "obj", id: o.id, pts: new Map() };
-    g.mode = mode;
-    g.pts.set(e.pointerId, [e.clientX, e.clientY]);
-    g.start = { ...objRef.current.find((x) => x.id === o.id), pts: new Map(g.pts) };
+    // bring to front
+    setObjects((list) => [...list.filter((x) => x.id !== o.id), list.find((x) => x.id === o.id)]);
+    try { wrapRef.current.setPointerCapture(e.pointerId); } catch (_) {}
+    const g = { kind: "obj", id: o.id, mode, pts: new Map([[e.pointerId, [e.clientX, e.clientY]]]), t0: performance.now(), moved: 0, multi: false, snap: {} };
+    snapshot(o.id, g);
     gesture.current = g;
   }
-  function objMove(e) {
+
+  // A second finger anywhere on the picture joins the current move as a pinch.
+  function wrapDownCapture(e) {
+    const g = gesture.current;
+    if (g?.kind !== "obj" || g.pts.has(e.pointerId) || g.mode !== "move") return;
+    e.stopPropagation();
+    e.preventDefault();
+    try { wrapRef.current.setPointerCapture(e.pointerId); } catch (_) {}
+    g.pts.set(e.pointerId, [e.clientX, e.clientY]);
+    g.multi = true;
+    setTrash({ show: false, hot: false });
+    snapshot(g.id, g);
+  }
+
+  function wrapMove(e) {
     const g = gesture.current;
     if (g?.kind !== "obj" || !g.pts.has(e.pointerId)) return;
-    e.stopPropagation();
     g.pts.set(e.pointerId, [e.clientX, e.clientY]);
     const st = g.start;
     const u = unit || 0.4;
     const ids = [...g.pts.keys()];
+    const first = st.pts.get(ids[0]);
+    if (first) g.moved = Math.max(g.moved, Math.hypot(e.clientX - first[0], e.clientY - first[1]));
+    const snapRot = (r) => {
+      const step = Math.PI / 2, near = Math.round(r / step) * step;
+      return Math.abs(r - near) < (G.rotationSnapDeg * Math.PI) / 180 ? near : r;
+    };
+
     if (g.mode === "handle") {
       const r = wrapRef.current.getBoundingClientRect();
       const cx = r.left + st.x * u, cy = r.top + st.y * u;
       const p0 = st.pts.get(ids[0]), p1 = g.pts.get(ids[0]);
       const d0 = Math.hypot(p0[0] - cx, p0[1] - cy) || 1, d1 = Math.hypot(p1[0] - cx, p1[1] - cy);
       const a0 = Math.atan2(p0[1] - cy, p0[0] - cx), a1 = Math.atan2(p1[1] - cy, p1[0] - cx);
-      updateObject(g.id, { scale: clamp(st.scale * (d1 / d0), 0.2, 8), rot: st.rot + a1 - a0 });
-    } else if (ids.length === 1) {
+      updateObject(g.id, { scale: clamp(st.scale * (d1 / d0), G.minScale, G.maxScale), rot: snapRot(st.rot + a1 - a0) });
+      return;
+    }
+    if (ids.length === 1 && !g.multi) {
       const p0 = st.pts.get(ids[0]), p1 = g.pts.get(ids[0]);
       if (!p0) return;
-      updateObject(g.id, { x: clamp(st.x + (p1[0] - p0[0]) / u, 0, SIZE), y: clamp(st.y + (p1[1] - p0[1]) / u, 0, SIZE) });
-    } else {
+      let x = clamp(st.x + (p1[0] - p0[0]) / u, 0, SIZE);
+      let y = clamp(st.y + (p1[1] - p0[1]) / u, 0, SIZE);
+      const sv = Math.abs(x - SIZE / 2) < G.snapDistance, sh = Math.abs(y - SIZE / 2) < G.snapDistance;
+      if (sv) x = SIZE / 2;
+      if (sh) y = SIZE / 2;
+      if ((sv && !g.snap.v) || (sh && !g.snap.h)) buzz();
+      g.snap = { v: sv, h: sh };
+      setGuides({ v: sv, h: sh });
+      // the bin
+      if (g.moved > G.trashShowAfterPx) {
+        const r = wrapRef.current.getBoundingClientRect();
+        const fx = (p1[0] - r.left) / u, fy = (p1[1] - r.top) / u;
+        const hot = Math.hypot(fx - SIZE / 2, fy - G.trashY) < G.trashRadius;
+        if (hot && !g.hot) buzz();
+        g.hot = hot;
+        setTrash({ show: true, hot });
+      }
+      updateObject(g.id, { x, y });
+      return;
+    }
+    if (ids.length >= 2) {
       const [i, j] = ids;
       const a0 = st.pts.get(i), b0 = st.pts.get(j), a1 = g.pts.get(i), b1 = g.pts.get(j);
       if (!a0 || !b0) return;
@@ -755,24 +855,44 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
       const ang0 = Math.atan2(b0[1] - a0[1], b0[0] - a0[0]), ang1 = Math.atan2(b1[1] - a1[1], b1[0] - a1[0]);
       const m0 = mid(a0, b0), m1 = mid(a1, b1);
       updateObject(g.id, {
-        scale: clamp(st.scale * (d1 / d0), 0.2, 8),
-        rot: st.rot + ang1 - ang0,
+        scale: clamp(st.scale * (d1 / d0), G.minScale, G.maxScale),
+        rot: snapRot(st.rot + ang1 - ang0),
         x: clamp(st.x + (m1[0] - m0[0]) / u, 0, SIZE),
         y: clamp(st.y + (m1[1] - m0[1]) / u, 0, SIZE),
       });
     }
   }
-  function objUp(e) {
+
+  function wrapUp(e) {
     const g = gesture.current;
     if (g?.kind !== "obj" || !g.pts.has(e.pointerId)) return;
     g.pts.delete(e.pointerId);
-    g.start = { ...objRef.current.find((x) => x.id === g.id), pts: new Map(g.pts) };
-    if (!g.pts.size) gesture.current = null;
+    if (g.pts.size) { snapshot(g.id, g); return; } // one finger lifted mid-pinch: keep going with the other
+    gesture.current = null;
+    setGuides({ v: false, h: false });
+    setTrash({ show: false, hot: false });
+    if (g.hot && !g.multi) { removeObject(g.id); buzz(); return; }
+    const isTap = g.mode === "move" && !(G.pinchLocksOutTap && g.multi) && g.moved < G.tapMaxMovePx && performance.now() - g.t0 < G.tapMaxMs;
+    if (isTap) {
+      const o = objRef.current.find((x) => x.id === g.id);
+      if (o?.type === "text") setEditing({ ...o });
+    }
   }
+
   function objWheel(e, o) {
     e.stopPropagation();
-    updateObject(o.id, e.shiftKey ? { rot: o.rot + (e.deltaY > 0 ? 0.08 : -0.08) } : { scale: clamp(o.scale * (e.deltaY < 0 ? 1.06 : 0.94), 0.2, 8) });
+    updateObject(o.id, e.shiftKey ? { rot: o.rot + (e.deltaY > 0 ? 0.08 : -0.08) } : { scale: clamp(o.scale * (e.deltaY < 0 ? 1.06 : 0.94), G.minScale, G.maxScale) });
   }
+
+  // Delete / Backspace removes the selected item (keyboard users).
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!selected || editing || e.target.closest?.("input,textarea")) return;
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeObject(selected); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   /* music */
   async function addMusic() {
@@ -889,7 +1009,15 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
 
       <div className="sheet-body">
         <div className="canvas-col">
-          <div className={`canvas-wrap tool-${tool}`} ref={wrapRef} onWheel={wheel}>
+          <div
+            className={`canvas-wrap tool-${tool}`}
+            ref={wrapRef}
+            onWheel={wheel}
+            onPointerDownCapture={wrapDownCapture}
+            onPointerMove={wrapMove}
+            onPointerUp={wrapUp}
+            onPointerCancel={wrapUp}
+          >
             <canvas ref={baseRef} width={SIZE} height={SIZE} className="layer" />
             <canvas ref={inkRef} width={SIZE} height={SIZE} className="layer" />
             <canvas
@@ -913,9 +1041,6 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
                     transform: `translate(-50%, -50%) rotate(${o.rot}rad) scale(${o.scale})`,
                   }}
                   onPointerDown={(e) => objDown(e, o)}
-                  onPointerMove={objMove}
-                  onPointerUp={objUp}
-                  onPointerCancel={objUp}
                   onWheel={(e) => objWheel(e, o)}
                 >
                   <ObjectView o={o} u={u} />
@@ -933,9 +1058,6 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
                         className="obj-handle"
                         style={{ transform: `scale(${1 / o.scale})` }}
                         onPointerDown={(e) => objDown(e, o, "handle")}
-                        onPointerMove={objMove}
-                        onPointerUp={objUp}
-                        onPointerCancel={objUp}
                         aria-label="Resize and turn"
                       >
                         ⤡
@@ -945,8 +1067,10 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
                 </div>
               ))}
             </div>
+            {guides.v && <span className="guide v" />}
+            {guides.h && <span className="guide h" />}
+            <div className={`trash ${trash.show ? "show" : ""} ${trash.hot ? "hot" : ""}`} aria-hidden="true">🗑</div>
           </div>
-          {objects.length > 0 && tool !== "draw" && <p className="hint">Drag to move · pinch or use ⤡ to resize and turn{objects.some((o) => o.type === "text") ? " · double-tap text to edit" : ""}</p>}
         </div>
 
         <div className="side">
@@ -998,7 +1122,7 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
             {tool === "text" && (
               <div className="panel-msg">
                 <button className="btn primary small-btn" onClick={() => addText()}>Add text</button>
-                <p className="muted">Or tap anywhere on the picture to write there. Six fonts, colours and a box or outline style are in the text screen.</p>
+                <p className="muted">Or tap anywhere on the picture to write there. Drag to move, pinch to resize and turn, tap to edit, drag to the bin to delete.</p>
               </div>
             )}
 
@@ -1123,18 +1247,20 @@ function ObjectView({ o, u }) {
   if (o.type === "sticker") return <span className="ov-sticker" style={{ fontSize: STICKER_BASE * u }}>{o.emoji}</span>;
   if (o.type === "text") {
     const f = fontOf(o.font);
-    const s = TEXT_BASE * u;
+    const s = (o.fs || TEXT_BASE) * u;
     return (
       <span
         className="ov-text"
         style={{
           font: f.css.replace("{s}", s),
           lineHeight: f.lh,
-          color: o.style === "pill" ? contrastOn(o.color) : o.color,
+          textAlign: o.align || "center",
+          color: o.style === "pill" ? contrastOn(o.color) : o.style === "neon" ? neonCore(o.color) : o.color,
           background: o.style === "pill" ? o.color : "transparent",
           padding: o.style === "pill" ? `${s * 0.22}px ${s * 0.45}px` : 0,
           borderRadius: s * 0.32,
           WebkitTextStroke: o.style === "outline" ? `${s * 0.16}px ${contrastOn(o.color) === "#FFFFFF" ? "#fff" : "#1F1B18"}` : undefined,
+          textShadow: o.style === "neon" ? `0 0 ${s * 0.25}px ${o.color}, 0 0 ${s * 0.5}px ${o.color}` : o.style === "shadow" ? `0 ${s * 0.06}px ${s * 0.14}px rgba(0,0,0,.45)` : undefined,
           paintOrder: "stroke fill",
         }}
       >

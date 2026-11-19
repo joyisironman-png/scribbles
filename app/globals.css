@@ -462,3 +462,46 @@ body.drawing, .sheet, .sheet * { -webkit-user-select: none; user-select: none; -
   .canvas-col .canvas-wrap { width: min(100%, calc(100dvh - 110px)); }
   .side { flex: 0 0 380px !important; max-height: calc(100dvh - 90px); overflow-y: auto; }
 }
+
+/* ===== gestures v2: guides, bin ===== */
+.guide { position: absolute; z-index: 4; pointer-events: none; background: rgba(229,72,77,.85); }
+.guide.v { left: 50%; top: 0; bottom: 0; width: 1.5px; transform: translateX(-50%); }
+.guide.h { top: 50%; left: 0; right: 0; height: 1.5px; transform: translateY(-50%); }
+.trash { position: absolute; left: 50%; top: calc(830 / 900 * 100%); z-index: 4; pointer-events: none;
+  width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; display: grid; place-items: center; font-size: 22px;
+  background: rgba(24,20,17,.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border: 2px solid rgba(255,255,255,.8);
+  opacity: 0; transform: scale(.6); transition: opacity .18s, transform .18s, background .18s; }
+.trash.show { opacity: 1; transform: scale(1); }
+.trash.hot { background: #e5484d; transform: scale(1.25); }
+@media (pointer: coarse) { .obj-del, .obj-handle { display: none; } }
+.obj.sel { outline-offset: 8px; }
+
+/* ===== text editor v2 (Instagram layout) ===== */
+.te-top { align-items: center; }
+.te-link { color: #fff; font-weight: 600; font-size: 15px; padding: 8px 4px; }
+.te-done { color: var(--ink); background: #fff; font-weight: 700; font-size: 15px; height: 38px; padding: 0 18px; border-radius: 99px; }
+.te-icons { display: flex; gap: 10px; }
+.te-icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: rgba(255,255,255,.14); font-weight: 800; font-size: 17px; font-family: "DM Sans", sans-serif; }
+.te-icon.style-pill { background: #fff; color: var(--ink); }
+.te-icon.style-outline { -webkit-text-stroke: 1.5px #fff; color: transparent; }
+.te-icon.style-neon { color: #fff; text-shadow: 0 0 6px #ff6ad5, 0 0 12px #ff6ad5; }
+.te-icon.style-shadow { text-shadow: 0 2px 3px rgba(0,0,0,.8); }
+.te-icon.color-dot { background: conic-gradient(#ef4444, #f97316, #facc15, #22c55e, #3b82f6, #8b5cf6, #ec4899, #ef4444); box-shadow: inset 0 0 0 9px var(--c), 0 0 0 2px #fff; }
+.te-icon.color-dot.on { box-shadow: inset 0 0 0 9px var(--c), 0 0 0 3px #fff, 0 0 0 5px rgba(255,255,255,.35); }
+.align-ico { display: flex; flex-direction: column; gap: 3px; width: 18px; }
+.align-ico i { display: block; height: 2.5px; border-radius: 2px; background: #fff; }
+.align-ico i:nth-child(1) { width: 100%; } .align-ico i:nth-child(2) { width: 62%; } .align-ico i:nth-child(3) { width: 82%; }
+.align-ico.center { align-items: center; } .align-ico.right { align-items: flex-end; } .align-ico.left { align-items: flex-start; }
+.te-stage { position: relative; }
+.te-size { position: absolute; left: -64px; top: 50%; width: 170px; transform: rotate(-90deg); -webkit-appearance: none; appearance: none; height: 4px; border-radius: 99px;
+  background: linear-gradient(90deg, rgba(255,255,255,.25), rgba(255,255,255,.7)); outline: none; z-index: 2; }
+.te-size::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+.te-stage textarea { margin-left: 26px; width: min(calc(100% - 26px), 680px); }
+.fonts { padding: 2px 2px 4px; }
+.font-chip { border-radius: 99px; height: 38px; padding: 0 16px; background: rgba(255,255,255,.12); white-space: nowrap; }
+/* record: ready-to-play player inside the circle */
+.music-spot .ms-disc { animation: none; }
+.music-spot.playing .ms-disc { animation: spin 6s linear infinite; }
+.music-spot:not(.playing) .ms-disc::after { display: none; }
+.ms-hint { position: absolute; left: 50%; bottom: -1.9em; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 99px; background: rgba(255,253,248,.92); color: var(--ink); box-shadow: 0 4px 10px -6px rgba(0,0,0,.4); }
