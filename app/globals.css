@@ -256,3 +256,50 @@ button:disabled { opacity: 0.35; cursor: default; }
 .small-btn { height: 42px; width: 100%; font-size: 14px; border-radius: 13px; }
 .widget-card .link { margin: 0; padding: 4px 0; }
 .recopy { display: block; margin: 16px auto 0; }
+
+/* ---------- drawing sheet: tools, photos, stickers, text ---------- */
+.sheet-body { display: flex; flex-direction: column; gap: 14px; flex: 1; }
+.canvas-col { flex: none; }
+.side { display: flex; flex-direction: column; gap: 14px; flex: 1; }
+.layer { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.layer.tool-sticker, .layer.tool-text { cursor: copy; }
+.label { font-size: 12.5px; font-weight: 600; color: var(--soft); flex: none; }
+.modes { gap: 6px; overflow-x: auto; scrollbar-width: none; justify-content: flex-start; }
+.modes .chip { flex: 1 0 auto; height: 38px; padding: 0 12px; font-size: 13.5px; }
+.stickers { justify-content: flex-start; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.sticker { flex: none; width: 40px; height: 40px; border-radius: 12px; font-size: 22px; display: grid; place-items: center; }
+.sticker.on { background: #fff; box-shadow: 0 0 0 2px var(--ink); }
+.photo-block { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 16px; background: rgba(255,255,255,.55); border: 1px solid var(--line); }
+.photo-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.photo-btns .chip, .filters-row .chip { height: 34px; padding: 0 12px; font-size: 13px; border-radius: 11px; }
+.filters-row { justify-content: flex-start; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.filters-row .chip { flex: none; }
+.text-pop {
+  position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 3; padding: 10px; border-radius: 16px;
+  background: rgba(255,253,248,.96); box-shadow: 0 16px 40px -16px rgba(0,0,0,.45); backdrop-filter: blur(8px);
+}
+.text-pop textarea {
+  width: 100%; border: 0; outline: none; resize: none; background: transparent;
+  font-family: Caveat, "Bradley Hand", cursive; font-weight: 600; font-size: 30px; line-height: 1.1;
+}
+.text-pop-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.text-pop-actions .chip { height: 36px; }
+
+/* ---------- iPad & Mac: bigger everything ---------- */
+@media (min-width: 820px) {
+  .app { max-width: 780px; padding-left: 32px; padding-right: 32px; }
+  .grid, .agrid { grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .hero .frame { max-width: 560px; margin: 0 auto; }
+  .hero-actions { max-width: 560px; margin-left: auto; margin-right: auto; }
+  .sheet { padding-left: 28px; padding-right: 28px; }
+  .sheet > * { max-width: 1240px; }
+  .sheet-body { flex-direction: row; align-items: flex-start; gap: 28px; }
+  .canvas-col { flex: 1; display: flex; justify-content: center; }
+  .canvas-col .canvas-wrap { width: min(100%, calc(100dvh - 120px)); }
+  .side { flex: 0 0 340px; position: sticky; top: 0; }
+  .side .inks { flex-wrap: wrap; gap: 10px; justify-content: flex-start; }
+  .swatch { width: 34px; height: 34px; }
+  .stickers { flex-wrap: wrap; }
+  .send { margin-top: 6px; }
+}
+.size span { box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }

@@ -15,6 +15,10 @@ const PAPERS = [
   { name: "Night", c: "#1E2233" },
 ];
 
+// iPhone or iPad (iPadOS Safari pretends to be a Mac, but has a touch screen).
+const isIOSDevice = () =>
+  /iphone|ipad|ipod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
 function ago(ts) {
   if (!ts) return "";
   const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -95,7 +99,7 @@ export default function App({ k, me, partner }) {
         setPlatform("android-app");
         return setPush(window.ScribblesAndroid.notificationsOn() ? "on" : "native-off");
       }
-      if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      if (isIOSDevice()) {
         setPlatform("ios");
         try { setWidgetDone(localStorage.getItem("scribbles-widget-done") === "1"); } catch (_) {}
         fetch(`/api/scriptable?k=${encodeURIComponent(k)}`).then((r) => r.text()).then(setWidgetScript).catch(() => {});
@@ -110,7 +114,7 @@ export default function App({ k, me, partner }) {
         await cache.put("/__home", new Response(location.pathname));
       } catch (_) {}
 
-      const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      const ios = isIOSDevice();
       const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
       if (!("PushManager" in window)) return setPush(ios && !standalone ? "install-first" : "unsupported");
       const sub = await reg.pushManager.getSubscription();
@@ -240,11 +244,9 @@ export default function App({ k, me, partner }) {
           <button className="btn primary" onClick={() => setDrawing({ base: null })}>
             Draw something
           </button>
-          {received && (
-            <button className="btn ghost" onClick={() => setDrawing({ base: img(received.id) })}>
-              Draw on this
-            </button>
-          )}
+          <button className="btn ghost" onClick={() => setDrawing({ base: null, startWith: "library" })}>
+            Send a photo
+          </button>
         </div>
 
         {sent && (
@@ -337,7 +339,7 @@ export default function App({ k, me, partner }) {
         />
       )}
 
-      {drawing && <DrawSheet k={k} base={drawing.base} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
+      {drawing && <DrawSheet k={k} base={drawing.base} startWith={drawing.startWith} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
 
       <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
     </div>
@@ -520,51 +522,184 @@ function Album({ doodles, me, partner, img, open }) {
 /* ───────────────────────── Drawing ───────────────────────── */
 
 const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const STICKERS = ["❤️", "✨", "🌸", "⭐", "🦋", "😘", "🌙", "☀️", "🎀", "🍓", "🌷", "💌"];
+const STAMP_SIZES = [80, 140, 220];
+const TEXT_SIZES = [48, 76, 116];
+const FILTERS = [
+  { id: "none", name: "Original" },
+  { id: "warm", name: "Warm" },
+  { id: "film", name: "Film" },
+  { id: "mono", name: "Mono" },
+  { id: "fade", name: "Dreamy" },
+  { id: "pop", name: "Pop" },
+];
+
+// Width of a pen stroke at a point: Apple Pencil pressure changes it, fingers and mice don't.
+const widthAt = (s, pt) => (s.pen ? s.size * (0.3 + (pt[2] ?? 0.5) * 1.4) : s.size);
 
 function styleFor(ctx, s) {
   ctx.globalCompositeOperation = s.erase ? "destination-out" : "source-over";
   ctx.strokeStyle = ctx.fillStyle = s.erase ? "#000" : s.color;
-  ctx.lineWidth = s.size;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 }
 
-function renderStroke(ctx, s) {
-  styleFor(ctx, s);
+// Draw the newest piece of a stroke (used live, and again for redraws so both match).
+function drawSegment(ctx, s, n) {
   const p = s.pts;
+  ctx.lineWidth = widthAt(s, p[n - 1]);
   ctx.beginPath();
-  ctx.arc(p[0][0], p[0][1], s.size / 2, 0, Math.PI * 2);
-  ctx.fill();
-  if (p.length < 2) return;
-  ctx.beginPath();
-  ctx.moveTo(p[0][0], p[0][1]);
-  for (let i = 1; i < p.length - 1; i++) {
-    const m = mid(p[i], p[i + 1]);
-    ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]);
+  if (n === 2) {
+    const m = mid(p[0], p[1]);
+    ctx.moveTo(p[0][0], p[0][1]);
+    ctx.lineTo(m[0], m[1]);
+  } else {
+    const a = mid(p[n - 3], p[n - 2]);
+    const b = mid(p[n - 2], p[n - 1]);
+    ctx.moveTo(a[0], a[1]);
+    ctx.quadraticCurveTo(p[n - 2][0], p[n - 2][1], b[0], b[1]);
   }
-  const last = p[p.length - 1];
-  ctx.lineTo(last[0], last[1]);
   ctx.stroke();
 }
 
-function DrawSheet({ k, base, partner, onClose, onSent }) {
+function drawDot(ctx, s) {
+  const p = s.pts[0];
+  ctx.beginPath();
+  ctx.arc(p[0], p[1], widthAt(s, p) / 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function renderItem(ctx, s) {
+  if (s.kind === "stamp") {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.font = `${s.size}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(s.emoji, s.x, s.y);
+    return;
+  }
+  if (s.kind === "text") {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.font = `600 ${s.size}px Caveat, "Bradley Hand", cursive`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = s.size / 7;
+    ctx.strokeStyle = s.color === "#FFFFFF" ? "rgba(0,0,0,.35)" : "rgba(255,255,255,.85)";
+    s.text.split("\n").forEach((line, i, all) => {
+      const y = s.y + (i - (all.length - 1) / 2) * s.size * 1.05;
+      ctx.strokeText(line, s.x, y);
+      ctx.fillStyle = s.color;
+      ctx.fillText(line, s.x, y);
+    });
+    return;
+  }
+  styleFor(ctx, s);
+  drawDot(ctx, s);
+  for (let n = 2; n <= s.pts.length; n++) drawSegment(ctx, s, n);
+  const last = s.pts[s.pts.length - 1];
+  if (s.pts.length > 1) {
+    const m = mid(s.pts[s.pts.length - 2], last);
+    ctx.lineWidth = widthAt(s, last);
+    ctx.beginPath();
+    ctx.moveTo(m[0], m[1]);
+    ctx.lineTo(last[0], last[1]);
+    ctx.stroke();
+  }
+}
+
+// Photo filters done by hand, so they look the same in every browser.
+function applyFilter(ctx, id) {
+  if (id === "none") return;
+  const img = ctx.getImageData(0, 0, SIZE, SIZE);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i], g = d[i + 1], b = d[i + 2];
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (id === "warm") { r = r * 1.08 + 10; g = g * 1.02 + 4; b = b * 0.9; }
+    else if (id === "film") {
+      r = 0.85 * r + 0.15 * l + 14; g = 0.85 * g + 0.15 * l + 6; b = 0.8 * b + 0.2 * l + 2;
+      r = (r - 128) * 0.92 + 128; g = (g - 128) * 0.92 + 128; b = (b - 128) * 0.88 + 128;
+    }
+    else if (id === "mono") { const c = (l - 128) * 1.15 + 128; r = g = b = c; }
+    else if (id === "fade") { r = r * 0.82 + 52; g = g * 0.8 + 46; b = b * 0.82 + 56; }
+    else if (id === "pop") {
+      r = l + (r - l) * 1.35; g = l + (g - l) * 1.35; b = l + (b - l) * 1.35;
+      r = (r - 128) * 1.1 + 128; g = (g - 128) * 1.1 + 128; b = (b - 128) * 1.1 + 128;
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b;
+  }
+  ctx.putImageData(img, 0, 0);
+  if (id === "film" || id === "fade") {
+    const v = ctx.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.35, SIZE / 2, SIZE / 2, SIZE * 0.75);
+    v.addColorStop(0, "rgba(0,0,0,0)");
+    v.addColorStop(1, id === "film" ? "rgba(40,20,0,.28)" : "rgba(255,240,245,.25)");
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+}
+
+// Read a picked photo; converts iPhone HEIC photos in browsers that can't open them.
+async function readPhoto(file) {
+  const tryLoad = (blob) =>
+    new Promise((ok, bad) => {
+      const im = new Image();
+      im.onload = () => ok(im);
+      im.onerror = bad;
+      im.src = URL.createObjectURL(blob);
+    });
+  try {
+    return await tryLoad(file);
+  } catch (_) {
+    if (!window.heic2any) {
+      await new Promise((ok, bad) => {
+        const sc = document.createElement("script");
+        sc.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+        sc.onload = ok;
+        sc.onerror = bad;
+        document.head.append(sc);
+      });
+    }
+    const out = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
+    return tryLoad(Array.isArray(out) ? out[0] : out);
+  }
+}
+
+function DrawSheet({ k, base, startWith, partner, onClose, onSent }) {
   const baseRef = useRef(null);
   const inkRef = useRef(null);
-  const history = useRef([]); // strokes and {clear:true} markers
+  const wrapRef = useRef(null);
+  const libRef = useRef(null);
+  const camRef = useRef(null);
+  const history = useRef([]); // strokes, stamps, text and {clear:true} markers
   const live = useRef(null);
+  const penSeen = useRef(false);
   const [color, setColor] = useState(INKS[0]);
-  const [size, setSize] = useState(SIZES[1]);
-  const [erase, setErase] = useState(false);
+  const [sizeIdx, setSizeIdx] = useState(1);
+  const [tool, setTool] = useState("pen"); // pen | erase | sticker | text
+  const [sticker, setSticker] = useState(STICKERS[0]);
   const [paper, setPaper] = useState(PAPERS[0].c);
   const [baseImg, setBaseImg] = useState(null);
+  const [photo, setPhoto] = useState(null);
+  const [fit, setFit] = useState("fill");
+  const [filter, setFilter] = useState("none");
+  const [textAt, setTextAt] = useState(null); // {x, y} while typing
+  const [draft, setDraft] = useState("");
   const [count, setCount] = useState(0);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState("");
+  const [touchy, setTouchy] = useState(true);
+
+  const size = SIZES[sizeIdx];
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
+    setTouchy(window.matchMedia("(pointer: coarse)").matches);
+    // Make sure the handwriting font is ready before it's drawn onto the canvas.
+    document.fonts?.load?.('600 60px "Caveat"').catch(() => {});
+    if (startWith === "library") setTimeout(() => libRef.current?.click(), 250);
     return () => { document.body.style.overflow = ""; };
-  }, []);
+  }, [startWith]);
 
   useEffect(() => {
     if (!base) return;
@@ -573,25 +708,32 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
     im.src = base;
   }, [base]);
 
-  // Paint the background layer (paper colour or the doodle being drawn on).
+  // Background layer: paper colour, the doodle being drawn on, or a photo (+ filter).
   useEffect(() => {
-    const ctx = baseRef.current.getContext("2d");
+    const ctx = baseRef.current.getContext("2d", { willReadFrequently: true });
     ctx.clearRect(0, 0, SIZE, SIZE);
-    if (baseImg) ctx.drawImage(baseImg, 0, 0, SIZE, SIZE);
-    else {
-      ctx.fillStyle = paper;
-      ctx.fillRect(0, 0, SIZE, SIZE);
+    ctx.fillStyle = photo ? "#FFFFFF" : paper;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    if (photo) {
+      const r = photo.naturalWidth / photo.naturalHeight;
+      const cover = fit === "fill";
+      let w = SIZE, h = SIZE;
+      if ((r > 1) === cover) { h = SIZE; w = SIZE * r; } else { w = SIZE; h = SIZE / r; }
+      if (!cover) { ctx.fillStyle = paper === "#1E2233" ? paper : "#FFFDF8"; ctx.fillRect(0, 0, SIZE, SIZE); }
+      ctx.drawImage(photo, (SIZE - w) / 2, (SIZE - h) / 2, w, h);
+      applyFilter(ctx, filter);
+    } else if (baseImg) {
+      ctx.drawImage(baseImg, 0, 0, SIZE, SIZE);
     }
-  }, [paper, baseImg]);
+  }, [paper, baseImg, photo, fit, filter]);
 
-  // Pick a readable default ink on the dark paper.
   useEffect(() => {
     if (paper === "#1E2233" && color === INKS[0]) setColor("#FFFFFF");
     if (paper !== "#1E2233" && color === "#FFFFFF") setColor(INKS[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paper]);
 
-  const activeStrokes = () => {
+  const activeItems = () => {
     const h = history.current;
     let i = h.length - 1;
     while (i >= 0 && !h[i].clear) i--;
@@ -602,7 +744,13 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
     const ctx = inkRef.current.getContext("2d");
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, SIZE, SIZE);
-    activeStrokes().forEach((s) => renderStroke(ctx, s));
+    activeItems().forEach((s) => renderItem(ctx, s));
+  }
+
+  function commit(item) {
+    history.current.push(item);
+    redraw();
+    setCount((c) => c + 1);
   }
 
   const toXY = (e) => {
@@ -611,16 +759,20 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
   };
 
   function down(e) {
+    if (e.pointerType === "pen") penSeen.current = true;
+    if (e.pointerType === "touch" && penSeen.current) return; // palm rejection once a Pencil is in use
     if (live.current) return; // ignore a second finger
     e.preventDefault();
+    const [x, y] = toXY(e);
+    if (tool === "sticker") return commit({ kind: "stamp", emoji: sticker, x, y, size: STAMP_SIZES[sizeIdx] });
+    if (tool === "text") { setTextAt({ x, y }); setDraft(""); return; }
     inkRef.current.setPointerCapture(e.pointerId);
-    const s = { color, size: erase ? size * 2 : size, erase, pts: [toXY(e)], pid: e.pointerId };
+    const pen = e.pointerType === "pen";
+    const s = { color, size: tool === "erase" ? size * 2 : size, erase: tool === "erase", pen, pts: [[x, y, pen ? e.pressure || 0.5 : 0.5]], pid: e.pointerId };
     live.current = s;
     const ctx = inkRef.current.getContext("2d");
     styleFor(ctx, s);
-    ctx.beginPath();
-    ctx.arc(s.pts[0][0], s.pts[0][1], s.size / 2, 0, Math.PI * 2);
-    ctx.fill();
+    drawDot(ctx, s);
   }
 
   function move(e) {
@@ -630,24 +782,11 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
     styleFor(ctx, s);
     const evs = e.nativeEvent.getCoalescedEvents?.() || [e.nativeEvent];
     for (const ev of evs) {
-      const p = toXY(ev);
-      const pts = s.pts;
-      const prev = pts[pts.length - 1];
-      if (Math.hypot(p[0] - prev[0], p[1] - prev[1]) < 1.5) continue;
-      pts.push(p);
-      const n = pts.length;
-      ctx.beginPath();
-      if (n === 2) {
-        const m = mid(pts[0], pts[1]);
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        ctx.lineTo(m[0], m[1]);
-      } else {
-        const a = mid(pts[n - 3], pts[n - 2]);
-        const b = mid(pts[n - 2], pts[n - 1]);
-        ctx.moveTo(a[0], a[1]);
-        ctx.quadraticCurveTo(pts[n - 2][0], pts[n - 2][1], b[0], b[1]);
-      }
-      ctx.stroke();
+      const [x, y] = toXY(ev);
+      const prev = s.pts[s.pts.length - 1];
+      if (Math.hypot(x - prev[0], y - prev[1]) < 1.5) continue;
+      s.pts.push([x, y, s.pen ? ev.pressure || 0.5 : 0.5]);
+      drawSegment(ctx, s, s.pts.length);
     }
   }
 
@@ -656,9 +795,14 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
     if (!s || e.pointerId !== s.pid) return;
     live.current = null;
     const { pid, ...stroke } = s;
-    history.current.push(stroke);
-    redraw(); // re-render cleanly so the saved image matches what you see
-    setCount((c) => c + 1);
+    commit(stroke);
+  }
+
+  function placeText() {
+    const t = draft.trim();
+    if (t && textAt) commit({ kind: "text", text: t, x: textAt.x, y: textAt.y, size: TEXT_SIZES[sizeIdx], color });
+    setTextAt(null);
+    setDraft("");
   }
 
   function undo() {
@@ -668,13 +812,29 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
   }
 
   function clearAll() {
-    if (!activeStrokes().length) return;
+    if (!activeItems().length) return;
     history.current.push({ clear: true });
     redraw();
     setCount((c) => c + 1);
   }
 
-  const hasInk = useMemo(() => activeStrokes().some((s) => !s.erase), [count]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function onPick(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setErr("");
+    try {
+      setPhoto(await readPhoto(f));
+      setFilter("none");
+      setFit("fill");
+      if (tool === "erase") setTool("pen");
+    } catch (_) {
+      setErr("Couldn't open that photo. Try a different one?");
+    }
+  }
+
+  const hasInk = useMemo(() => activeItems().some((s) => !s.erase), [count]); // eslint-disable-line react-hooks/exhaustive-deps
+  const canSend = hasInk || Boolean(photo);
   const canUndo = history.current.length > 0;
 
   async function send() {
@@ -686,12 +846,12 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
       const ctx = out.getContext("2d");
       ctx.drawImage(baseRef.current, 0, 0);
       ctx.drawImage(inkRef.current, 0, 0);
-      let data = out.toDataURL("image/png");
-      if (data.length > 1_400_000) data = out.toDataURL("image/jpeg", 0.9);
+      let data = photo ? out.toDataURL("image/jpeg", 0.88) : out.toDataURL("image/png");
+      if (data.length > 1_400_000) data = out.toDataURL("image/jpeg", 0.82);
       const r = await fetch("/api/doodles", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ k, image: data, bg: base ? null : paper }),
+        body: JSON.stringify({ k, image: data, bg: base || photo ? null : paper }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't send");
       onSent((await r.json()).doodle);
@@ -701,73 +861,138 @@ function DrawSheet({ k, base, partner, onClose, onSent }) {
     }
   }
 
+  const sizeLabel = tool === "sticker" ? "Sticker size" : tool === "text" ? "Text size" : "Brush";
+
   return (
     <div className="sheet">
       <div className="sheet-top">
         <button className="icon" onClick={onClose} aria-label="Close">✕</button>
-        <div className="sheet-title">
-          for <em>{partner.name}</em>
-        </div>
+        <div className="sheet-title">for <em>{partner.name}</em></div>
         <div className="sheet-tools">
           <button className="icon" onClick={undo} disabled={!canUndo} aria-label="Undo">↶</button>
           <button className="icon" onClick={clearAll} disabled={!hasInk} aria-label="Clear">⌫</button>
         </div>
       </div>
 
-      <div className="canvas-wrap">
-        <canvas ref={baseRef} width={SIZE} height={SIZE} className="layer" />
-        <canvas
-          ref={inkRef}
-          width={SIZE}
-          height={SIZE}
-          className="layer ink"
-          onPointerDown={down}
-          onPointerMove={move}
-          onPointerUp={up}
-          onPointerCancel={up}
-        />
-      </div>
-
-      <div className="tools">
-        <div className="row inks">
-          {INKS.map((c) => (
-            <button
-              key={c}
-              className={`swatch ${!erase && color === c ? "on" : ""}`}
-              style={{ "--c": c }}
-              onClick={() => { setColor(c); setErase(false); }}
-              aria-label={`Ink ${c}`}
+      <div className="sheet-body">
+        <div className="canvas-col">
+          <div className="canvas-wrap" ref={wrapRef}>
+            <canvas ref={baseRef} width={SIZE} height={SIZE} className="layer" />
+            <canvas
+              ref={inkRef}
+              width={SIZE}
+              height={SIZE}
+              className={`layer ink tool-${tool}`}
+              onPointerDown={down}
+              onPointerMove={move}
+              onPointerUp={up}
+              onPointerCancel={up}
             />
-          ))}
-        </div>
-        <div className="row">
-          <div className="sizes">
-            {SIZES.map((s) => (
-              <button key={s} className={`size ${size === s ? "on" : ""}`} onClick={() => setSize(s)} aria-label={`Brush ${s}`}>
-                <span style={{ width: s / 1.6 + 4, height: s / 1.6 + 4, background: erase ? "#B9AFA3" : color }} />
-              </button>
-            ))}
+            {textAt && (
+              <div className="text-pop" onPointerDown={(e) => e.stopPropagation()}>
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={draft}
+                  placeholder="Write something sweet…"
+                  onChange={(e) => setDraft(e.target.value)}
+                  style={{ color: color === "#FFFFFF" ? "#1F1B18" : color }}
+                />
+                <div className="text-pop-actions">
+                  <button className="chip" onClick={() => setTextAt(null)}>Cancel</button>
+                  <button className="chip on" onClick={placeText}>Add</button>
+                </div>
+              </div>
+            )}
           </div>
-          <button className={`chip ${erase ? "on" : ""}`} onClick={() => setErase((v) => !v)}>
-            Eraser
+        </div>
+
+        <div className="side">
+          <div className="tools">
+            <div className="row modes">
+              {[["pen", "✎ Draw"], ["sticker", "✿ Stickers"], ["text", "Aa Text"], ["erase", "Eraser"]].map(([id, label]) => (
+                <button key={id} className={`chip ${tool === id ? "on" : ""}`} onClick={() => setTool(id)}>{label}</button>
+              ))}
+            </div>
+
+            {tool === "sticker" ? (
+              <div className="row stickers">
+                {STICKERS.map((st) => (
+                  <button key={st} className={`sticker ${sticker === st ? "on" : ""}`} onClick={() => setSticker(st)}>{st}</button>
+                ))}
+              </div>
+            ) : (
+              <div className="row inks">
+                {INKS.map((c) => (
+                  <button
+                    key={c}
+                    className={`swatch ${tool !== "erase" && color === c ? "on" : ""}`}
+                    style={{ "--c": c }}
+                    onClick={() => { setColor(c); if (tool === "erase") setTool("pen"); }}
+                    aria-label={`Ink ${c}`}
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="row">
+              <span className="label">{sizeLabel}</span>
+              <div className="sizes">
+                {SIZES.map((s, i) => (
+                  <button key={s} className={`size ${sizeIdx === i ? "on" : ""}`} onClick={() => setSizeIdx(i)} aria-label={`Size ${i + 1}`}>
+                    <span style={{ width: s / 1.6 + 4, height: s / 1.6 + 4, background: tool === "erase" ? "#B9AFA3" : color }} />
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="photo-block">
+              <div className="row">
+                <span className="label">Photo</span>
+                <div className="photo-btns">
+                  <button className="chip" onClick={() => libRef.current?.click()}>🖼 {photo ? "Change" : "Add photo"}</button>
+                  {touchy && <button className="chip" onClick={() => camRef.current?.click()}>📷 Camera</button>}
+                  {photo && <button className="chip" onClick={() => setPhoto(null)}>Remove</button>}
+                </div>
+              </div>
+              {photo && (
+                <>
+                  <div className="row">
+                    <span className="label">Frame</span>
+                    <div className="photo-btns">
+                      <button className={`chip ${fit === "fill" ? "on" : ""}`} onClick={() => setFit("fill")}>Fill square</button>
+                      <button className={`chip ${fit === "fit" ? "on" : ""}`} onClick={() => setFit("fit")}>Show whole</button>
+                    </div>
+                  </div>
+                  <div className="row filters-row">
+                    {FILTERS.map((f) => (
+                      <button key={f.id} className={`chip ${filter === f.id ? "on" : ""}`} onClick={() => setFilter(f.id)}>{f.name}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+              <input ref={libRef} type="file" accept="image/*" hidden onChange={onPick} />
+              <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={onPick} />
+            </div>
+
+            {!base && !photo && (
+              <div className="row papers">
+                {PAPERS.map((p) => (
+                  <button key={p.c} className={`paper ${paper === p.c ? "on" : ""}`} style={{ "--c": p.c }} onClick={() => setPaper(p.c)}>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {err && <p className="err">{err}</p>}
+          <button className="btn primary send" disabled={!canSend || sending} onClick={send}>
+            {sending ? "Sending…" : `Send to ${partner.name}`}
+            {!sending && <span className="arrow">→</span>}
           </button>
         </div>
-        {!base && (
-          <div className="row papers">
-            {PAPERS.map((p) => (
-              <button key={p.c} className={`paper ${paper === p.c ? "on" : ""}`} style={{ "--c": p.c }} onClick={() => setPaper(p.c)}>
-                {p.name}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
-
-      {err && <p className="err">{err}</p>}
-      <button className="btn primary send" disabled={!hasInk || sending} onClick={send}>
-        {sending ? "Sending…" : `Send to ${partner.name}`}
-        {!sending && <span className="arrow">→</span>}
-      </button>
     </div>
   );
 }

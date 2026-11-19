@@ -16,6 +16,8 @@ import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -36,6 +38,9 @@ public class MainActivity extends Activity {
     private WebView web;
     private EditText linkField;
     private TextView status;
+    private ValueCallback<Uri[]> fileCallback;
+    private Uri cameraUri;
+    private static final int PICK_PHOTO = 42;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -101,6 +106,31 @@ public class MainActivity extends Activity {
                     return true;
                 }
             });
+            web.setWebChromeClient(new WebChromeClient() {
+                // Photo buttons on the page: gallery, files, or the camera.
+                @Override
+                public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
+                    if (fileCallback != null) fileCallback.onReceiveValue(null);
+                    fileCallback = cb;
+                    Intent camera = cameraIntent();
+                    Intent pick = new Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*");
+                    Intent chooser;
+                    if (params.isCaptureEnabled() && camera != null) {
+                        chooser = camera;
+                    } else {
+                        chooser = Intent.createChooser(pick, "Add a photo");
+                        if (camera != null) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{camera});
+                    }
+                    try {
+                        startActivityForResult(chooser, PICK_PHOTO);
+                    } catch (Exception e) {
+                        fileCallback = null;
+                        cb.onReceiveValue(null);
+                        return false;
+                    }
+                    return true;
+                }
+            });
             web.loadUrl(Store.link(this));
         }
         FrameLayout root = new FrameLayout(this);
@@ -110,6 +140,43 @@ public class MainActivity extends Activity {
         root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);
         askForNotifications();
+    }
+
+    /** Camera intent that saves the shot into Pictures/Scribbles. */
+    private Intent cameraIntent() {
+        if (Build.VERSION.SDK_INT < 29) return null;
+        try {
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Images.Media.DISPLAY_NAME, "scribbles-photo-" + System.currentTimeMillis() + ".jpg");
+            v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            v.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Scribbles");
+            cameraUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+            if (cameraUri == null) return null;
+            return new Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                    .putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
+                    .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception e) {
+            cameraUri = null;
+            return null;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != PICK_PHOTO || fileCallback == null) return;
+        Uri[] picked = null;
+        if (result == RESULT_OK) {
+            if (data != null && data.getData() != null) picked = new Uri[]{data.getData()};
+            else if (cameraUri != null) picked = new Uri[]{cameraUri};
+        }
+        // Clean up the empty camera slot if the camera wasn't used.
+        if (cameraUri != null && (picked == null || picked[0] != cameraUri)) {
+            try { getContentResolver().delete(cameraUri, null, null); } catch (Exception ignored) {}
+        }
+        cameraUri = null;
+        fileCallback.onReceiveValue(picked);
+        fileCallback = null;
     }
 
     private void askForNotifications() {
