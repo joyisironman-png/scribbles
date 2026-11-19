@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="paper">#FBF6EC</color>
+    <color name="ink">#1F1B18</color>
+    <color name="soft">#6F655B</color>
+    <color name="card">#FFFDF8</color>
+</resources>

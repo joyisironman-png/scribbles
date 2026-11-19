@@ -1,0 +1,48 @@
+name: Build Android widget
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk Scribbles.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Scribbles-apk
+          path: Scribbles.apk
+
+      - name: Publish as a release (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: Scribbles Android widget (build ${{ github.run_number }})
+          body: Download Scribbles.apk on your phone and install it.
+          files: Scribbles.apk
+          make_latest: true

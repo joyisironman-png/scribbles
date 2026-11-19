@@ -1,0 +1,31 @@
+import { auth, json } from "@/lib/api";
+import { latestFor, getImage } from "@/lib/store";
+
+export const dynamic = "force-dynamic";
+
+// Used by the home-screen widgets: the latest doodle sent TO this person.
+//   ?k=KEY&format=json  -> metadata + image URL
+//   ?k=KEY&format=png   -> the image itself
+export async function GET(req) {
+  const u = new URL(req.url);
+  const k = u.searchParams.get("k");
+  const a = auth(k);
+  if (!a) return json({ error: "bad key" }, 401);
+
+  const d = await latestFor(a.me.id);
+  const origin = u.origin;
+  if (u.searchParams.get("format") === "png") {
+    if (!d) return json({ has: false }, 404);
+    const [, mime, b64] = /^data:([^;]+);base64,(.*)$/.exec((await getImage(d.id)) || "") || [];
+    if (!b64) return json({ has: false }, 404);
+    return new Response(Buffer.from(b64, "base64"), { headers: { "content-type": mime, "cache-control": "no-store" } });
+  }
+  return json({
+    has: Boolean(d),
+    id: d?.id ?? null,
+    fromName: a.partner.name,
+    createdAt: d?.createdAt ?? null,
+    image: d ? `${origin}/api/image/${d.id}?k=${encodeURIComponent(k)}` : null,
+    app: `${origin}/u/${encodeURIComponent(k)}`,
+  });
+}
