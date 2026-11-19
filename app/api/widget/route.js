@@ -25,6 +25,7 @@ export async function GET(req) {
     id: d?.id ?? null,
     fromName: a.partner.name,
     createdAt: d?.createdAt ?? null,
+    bg: d?.bg ?? null,
     image: d ? `${origin}/api/image/${d.id}?k=${encodeURIComponent(k)}` : null,
     app: `${origin}/u/${encodeURIComponent(k)}`,
     // Used by the Android app for its own 8 pm reminder.
