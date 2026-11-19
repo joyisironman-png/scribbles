@@ -65,11 +65,10 @@ public class ScribbleWidget extends AppWidgetProvider {
 
         Bitmap bmp = Store.hasDoodle(c) ? Store.loadBitmap(c) : null;
         if (bmp != null) {
-            v.setImageViewBitmap(R.id.image, bmp);
+            v.setImageViewBitmap(R.id.image, Polaroid.render(bmp, Store.fromName(c), time(Store.createdAt(c))));
             v.setViewVisibility(R.id.image, View.VISIBLE);
             v.setViewVisibility(R.id.empty, View.GONE);
-            v.setViewVisibility(R.id.caption, View.VISIBLE);
-            v.setTextViewText(R.id.caption, Store.fromName(c) + " · " + time(Store.createdAt(c)));
+            v.setViewVisibility(R.id.caption, View.GONE);
         } else {
             v.setViewVisibility(R.id.image, View.GONE);
             v.setViewVisibility(R.id.empty, View.VISIBLE);
@@ -78,7 +77,7 @@ public class ScribbleWidget extends AppWidgetProvider {
             v.setTextViewText(R.id.empty_title, link == null ? "Add your link" : "Nothing yet");
             v.setTextViewText(R.id.empty_text, link == null
                     ? "Open the Scribbles app and paste your personal link."
-                    : "When " + (who == null || who.isEmpty() ? "they" : who) + " draws something, it shows up here.");
+                    : "When " + (who == null || who.isEmpty() ? "they" : who) + " draws something, it lands here.");
         }
         return v;
     }

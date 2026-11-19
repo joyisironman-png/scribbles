@@ -6,11 +6,19 @@
     android:background="@drawable/widget_bg"
     android:clipToOutline="true">
 
+    <!-- warm grained paper -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/paper_tile" />
+
+    <!-- the polaroid always fits whole, whatever the widget's shape -->
     <ImageView
         android:id="@+id/image"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:scaleType="centerCrop"
+        android:padding="6dp"
+        android:scaleType="fitCenter"
         android:contentDescription="@string/widget_desc"
         android:visibility="gone" />
 
@@ -19,14 +27,15 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:gravity="center_vertical"
+        android:gravity="bottom"
         android:padding="16dp">
 
         <TextView
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="✎ Scribbles"
-            android:textColor="#6F655B"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:text="✎  Scribbles"
+            android:textColor="#7A6E62"
             android:textSize="12sp"
             android:textStyle="bold" />
 
@@ -34,20 +43,19 @@
             android:id="@+id/empty_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
             android:fontFamily="serif"
             android:textStyle="italic"
             android:text="Nothing yet"
             android:textColor="#1F1B18"
-            android:textSize="20sp" />
+            android:textSize="22sp" />
 
         <TextView
             android:id="@+id/empty_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Open the Scribbles app and paste your personal link."
-            android:textColor="#6F655B"
+            android:text="Open Scribbles and paste your personal link."
+            android:textColor="#7A6E62"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -55,24 +63,15 @@
         android:id="@+id/caption"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="10dp"
-        android:background="@drawable/pill_bg"
-        android:paddingStart="9dp"
-        android:paddingEnd="9dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp"
-        android:textColor="#1F1B18"
-        android:textSize="11sp"
-        android:textStyle="bold"
         android:visibility="gone" />
 
     <ImageView
         android:id="@+id/refresh"
-        android:layout_width="30dp"
-        android:layout_height="30dp"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
         android:layout_gravity="top|end"
-        android:layout_margin="8dp"
+        android:layout_margin="6dp"
+        android:alpha="0.75"
         android:background="@drawable/pill_bg"
         android:padding="7dp"
         android:src="@drawable/ic_refresh"
