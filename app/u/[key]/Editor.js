@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GESTURES as G } from "@/lib/gestures";
+import { getKey, lockImage, lockJSON, unlockJSON } from "@/lib/e2e";
+import { describeSong, topArtists } from "@/lib/songs";
 
 /*
   The Scribbles editor, Instagram-story style:
@@ -480,7 +482,7 @@ const loadRecents = () => {
   try { return JSON.parse(localStorage.getItem("scribbles-recent-colors") || "[]"); } catch (_) { return []; }
 };
 
-export default function Editor({ k, base, startWith, partner, onClose, onSent }) {
+export default function Editor({ k, me, base, startWith, initialMusic, partner, onClose, onSent }) {
   const baseRef = useRef(null);
   const inkRef = useRef(null);
   const liveRef = useRef(null);
@@ -512,6 +514,9 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
   const [unit, setUnit] = useState(0.4); // screen px per picture unit
   const [link, setLink] = useState("");
   const [musicBusy, setMusicBusy] = useState(false);
+  const [songs, setSongs] = useState([]); // your shared song library (unlocked on this device)
+  const [songTab, setSongTab] = useState("mine");
+  const [artist, setArtist] = useState(null);
   const [count, setCount] = useState(0);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState("");
@@ -909,22 +914,71 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
   });
 
   /* music */
+  useEffect(() => {
+    const key = getKey();
+    if (!key) return;
+    fetch(`/api/songs?k=${encodeURIComponent(k)}`)
+      .then((r) => r.json())
+      .then(async (j) => {
+        const open = await Promise.all((j.songs || []).map((x) => unlockJSON(key, x.enc).then((s) => ({ ...s, by: x.by, at: x.at })).catch(() => null)));
+        setSongs(open.filter(Boolean));
+      })
+      .catch(() => {});
+  }, [k]);
+
+  async function placeSong(song) {
+    const thumb = await loadImg(`/api/music/thumb?id=${song.vid}`).catch(() => null);
+    setObjects((list) => list.filter((o) => o.type !== "music"));
+    addObject({
+      type: "music",
+      vid: song.vid,
+      title: song.title,
+      author: song.artist || song.movie || (song.credits || [])[0] || "",
+      thumb,
+      x: SIZE * 0.7,
+      y: SIZE * 0.28,
+      scale: 0.85,
+    });
+  }
+
+  useEffect(() => {
+    if (initialMusic) { setTool("music"); placeSong(initialMusic); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function addMusic() {
     setErr("");
     setMusicBusy(true);
     try {
-      const r = await fetch(`/api/music?k=${encodeURIComponent(k)}&url=${encodeURIComponent(link)}`);
+      const r = await fetch("/api/music", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, url: link }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Couldn't find that song");
-      const thumb = await loadImg(`/api/music/thumb?id=${j.id}`).catch(() => null);
-      setObjects((list) => list.filter((o) => o.type !== "music"));
-      addObject({ type: "music", vid: j.id, title: j.title, author: j.author, thumb, x: SIZE * 0.7, y: SIZE * 0.28, scale: 0.85 });
+      const song = { ...describeSong({ ...j, url: link }), by: me?.id, at: Date.now() };
+      await placeSong(song);
+      // Every song you use is also remembered in your library (locked).
+      const key = getKey();
+      if (key) {
+        fetch("/api/songs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, enc: await lockJSON(key, song) }) });
+        setSongs((list) => [song, ...list]);
+      }
       setLink("");
     } catch (e) {
       setErr(e.message);
     }
     setMusicBusy(false);
   }
+
+  // Unique songs (newest first) for each person, plus most-shared artists.
+  const library = useMemo(() => {
+    const seen = new Set();
+    const list = songs
+      .slice()
+      .sort((a, b) => (b.at || 0) - (a.at || 0))
+      .filter((x) => (songTab === "mine" ? x.by === me?.id : x.by !== me?.id))
+      .filter((x) => !artist || x.artist === artist)
+      .filter((x) => (seen.has(x.vid) ? false : seen.add(x.vid)));
+    return { list: list.slice(0, 30), artists: topArtists(songs) };
+  }, [songs, songTab, artist, me]);
   const music = objects.find((o) => o.type === "music");
 
   /* photo */
@@ -987,19 +1041,25 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
       [...objects].sort((a, b) => (a.z || 1) - (b.z || 1)).forEach((o) => paintObject(ctx, o));
       const rich = photo || music;
       let data = rich ? out.toDataURL("image/jpeg", 0.88) : out.toDataURL("image/png");
-      if (data.length > 1_400_000) data = out.toDataURL("image/jpeg", 0.82);
+      if (data.length > 1_100_000) data = out.toDataURL("image/jpeg", 0.82);
+      const key = getKey();
+      const songInfo = music ? { id: music.vid, title: music.title, author: music.author, x: music.x, y: music.y, r: RECORD_R * music.scale } : null;
+      // End-to-end: lock the picture and the song on this phone before anything is uploaded.
+      const image = key ? await lockImage(key, data) : data;
+      const songPayload = songInfo ? (key ? { enc: await lockJSON(key, songInfo) } : songInfo) : null;
       const r = await fetch("/api/doodles", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           k,
-          image: data,
+          image,
           bg: base || photo ? null : paper,
-          music: music ? { id: music.vid, title: music.title, author: music.author, x: music.x, y: music.y, r: RECORD_R * music.scale } : null,
+          music: songPayload,
         }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't send");
-      onSent((await r.json()).doodle);
+      const sentDoodle = (await r.json()).doodle;
+      onSent({ ...sentDoodle, music: songInfo });
     } catch (e) {
       setErr(e.message || "Couldn't send. Try again?");
       setSending(false);
@@ -1163,7 +1223,37 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
                     <button className="chip" onClick={() => removeObject(music.id)}>Remove</button>
                   </div>
                 ) : (
-                  <p className="muted">Paste a YouTube or YouTube Music link. It becomes a record on your picture, and {partner.name} can tap it to play.</p>
+                  <p className="muted">Pick a song, or paste a YouTube / YouTube Music link. It becomes a record {partner.name} can tap to play.</p>
+                )}
+                {songs.length > 0 && (
+                  <div className="library">
+                    <div className="lib-tabs">
+                      <button className={songTab === "mine" ? "on" : ""} onClick={() => { setSongTab("mine"); setArtist(null); }}>Your songs</button>
+                      <button className={songTab === "theirs" ? "on" : ""} onClick={() => { setSongTab("theirs"); setArtist(null); }}>{partner.name}&apos;s</button>
+                    </div>
+                    {library.artists.length > 1 && (
+                      <div className="artist-chips">
+                        {library.artists.map((a) => (
+                          <button key={a.name} className={`chip ${artist === a.name ? "on" : ""}`} onClick={() => setArtist(artist === a.name ? null : a.name)}>
+                            {a.name} <span className="muted">{a.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="song-list">
+                      {library.list.length === 0 && <p className="muted small-note">Nothing here yet. Share a song to Scribbles from YouTube Music.</p>}
+                      {library.list.map((x) => (
+                        <button key={x.vid + x.at} className="song-row" onClick={() => placeSong(x)}>
+                          <span className="mini-record" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${x.vid}/default.jpg)` }} />
+                          <span className="sr-text">
+                            <b>{x.title}</b>
+                            <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(" · ")}</span>
+                          </span>
+                          <span className={`kind ${x.kind === "song" ? "song" : ""}`}>{x.kind === "song" ? "♫" : "▶"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 <div className="link-row">
                   <input

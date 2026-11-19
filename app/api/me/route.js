@@ -1,6 +1,6 @@
 import { auth, json, publicUser } from "@/lib/api";
 import { pushEnabled } from "@/lib/push";
-import { remindOn, setRemind } from "@/lib/store";
+import { remindOn, setRemind, getE2E } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,7 @@ export async function GET(req) {
     partner: publicUser(a.partner),
     vapidPublicKey: pushEnabled() ? process.env.VAPID_PUBLIC_KEY : null,
     remind: await remindOn(a.me.id),
+    e2e: await getE2E(),
   });
 }
 

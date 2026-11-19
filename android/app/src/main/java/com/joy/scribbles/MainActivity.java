@@ -12,6 +12,9 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import org.json.JSONObject;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
@@ -41,6 +44,10 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private Uri cameraUri;
     private static final int PICK_PHOTO = 42;
+    private String pendingShare;
+    private boolean pageReady = false;
+    private int shareTries = 0;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -48,6 +55,41 @@ public class MainActivity extends Activity {
         Notifier.ensureChannels(this);
         if (Store.link(this) != null) showWeb();
         else showSetup();
+        handleShare(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleShare(intent);
+    }
+
+    /** YouTube Music → Share → Scribbles: hand the link to the app, which saves the song. */
+    private void handleShare(Intent in) {
+        if (in == null || !Intent.ACTION_SEND.equals(in.getAction())) return;
+        String text = in.getStringExtra(Intent.EXTRA_TEXT);
+        in.setAction(null);
+        if (text == null) return;
+        if (Store.link(this) == null) {
+            Toast.makeText(this, "Connect Scribbles first, then share again", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (web == null) showWeb();
+        pendingShare = text;
+        shareTries = 0;
+        deliverShare();
+    }
+
+    private void deliverShare() {
+        if (pendingShare == null || web == null) return;
+        if (!pageReady) { handler.postDelayed(this::deliverShare, 400); return; }
+        String js = "(function(t){ if (window.scribblesShare) { window.scribblesShare(t); return 'ok'; } return 'wait'; })("
+                + JSONObject.quote(pendingShare) + ")";
+        web.evaluateJavascript(js, v -> {
+            if ("\"ok\"".equals(v)) pendingShare = null;
+            else if (++shareTries < 25) handler.postDelayed(this::deliverShare, 400);
+        });
     }
 
     @Override
@@ -94,6 +136,11 @@ public class MainActivity extends Activity {
             web.setBackgroundColor(Color.parseColor("#FBF6EC"));
             web.addJavascriptInterface(new Bridge(), "ScribblesAndroid");
             web.setWebViewClient(new WebViewClient() {
+                @Override
+                public void onPageFinished(WebView v, String url) {
+                    pageReady = true;
+                }
+
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                     Uri u = req.getUrl();
@@ -220,6 +267,16 @@ public class MainActivity extends Activity {
                     askForNotifications();
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void setKey(String code) {
+            if (code == null || code.length() < 40) return;
+            Store.setKey(getApplicationContext(), code);
+            new Thread(() -> {
+                try { Store.fetch(getApplicationContext()); Store.markCurrentAsSeen(getApplicationContext()); } catch (Exception ignored) {}
+                ScribbleWidget.renderAll(getApplicationContext());
+            }).start();
         }
 
         @JavascriptInterface

@@ -20,15 +20,19 @@ export async function POST(req) {
   const a = auth(body.k);
   if (!a) return json({ error: "bad key" }, 401);
 
-  const m = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(body.image || "");
-  if (!m) return json({ error: "image must be a png/jpeg/webp data URL" }, 400);
-  if (m[2].length > MAX_BYTES) return json({ error: "drawing too large" }, 413);
+  // Either a locked picture ("e2e:..."), or a plain one from before encryption was switched on.
+  const img = String(body.image || "");
+  const ok = /^e2e:[A-Za-z0-9+/=]+$/.test(img) || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(img);
+  if (!ok) return json({ error: "unexpected picture format" }, 400);
+  if (img.length > MAX_BYTES) return json({ error: "drawing too large" }, 413);
 
   const bg = /^#[0-9A-Fa-f]{6}$/.test(body.bg || "") ? body.bg : null;
   // Optional song attached as a record sticker: where it sits on the picture, and what it is.
   const mu = body.music;
   const music =
-    mu && /^[\w-]{11}$/.test(mu.id || "")
+    mu && typeof mu.enc === "string" && mu.enc.length < 6000 && /^[A-Za-z0-9+/=]+$/.test(mu.enc)
+      ? { enc: mu.enc }
+      : mu && /^[\w-]{11}$/.test(mu.id || "")
       ? {
           id: mu.id,
           title: String(mu.title || "").slice(0, 120),
@@ -36,7 +40,7 @@ export async function POST(req) {
           x: Number(mu.x) || 450, y: Number(mu.y) || 450, r: Math.max(20, Math.min(450, Number(mu.r) || 90)),
         }
       : null;
-  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: body.image, bg, music });
+  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: img, bg, music });
   await notify(a.partner.id, {
     title: music ? `${a.me.name} sent you a doodle with a song ♫` : `${a.me.name} sent you a doodle`,
     body: "Tap to see it ✏️",

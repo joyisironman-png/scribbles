@@ -2,6 +2,49 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DrawSheet, { SIZE } from "./Editor";
+import { getKey, setKey, newKey, fingerprint, unlockBytes, lockBytes, lockJSON, unlockJSON, toB64, validCode, cleanCode } from "@/lib/e2e";
+import { findLink, describeSong } from "@/lib/songs";
+
+/* Pictures are fetched, unlocked on this device when they're end-to-end encrypted, and shown from memory. */
+const KREF = { k: "" };
+const picCache = new Map();
+const sniff = (b) => (b[0] === 0x89 ? "image/png" : b[0] === 0xff ? "image/jpeg" : "image/webp");
+export function picURL(id) {
+  if (!picCache.has(id)) {
+    picCache.set(
+      id,
+      (async () => {
+        const r = await fetch(`/api/image/${id}?k=${encodeURIComponent(KREF.k)}`);
+        if (!r.ok) throw new Error("missing");
+        let blob = await r.blob();
+        if (r.headers.get("x-e2e") === "1") {
+          const key = getKey();
+          if (!key) throw new Error("locked");
+          const plain = await unlockBytes(key, new Uint8Array(await blob.arrayBuffer()));
+          blob = new Blob([plain], { type: sniff(plain) });
+        }
+        return URL.createObjectURL(blob);
+      })().catch((e) => {
+        picCache.delete(id);
+        throw e;
+      })
+    );
+  }
+  return picCache.get(id);
+}
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+function Pic({ id, ...rest }) {
+  const [src, setSrc] = useState(BLANK);
+  useEffect(() => {
+    let on = true;
+    const get = () => picURL(id).then((u) => on && setSrc(u)).catch(() => {});
+    get();
+    window.addEventListener("scribbles-unlocked", get); // try again once this device is unlocked
+    return () => { on = false; window.removeEventListener("scribbles-unlocked", get); };
+  }, [id]);
+  // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
+  return <img src={src} {...rest} className={`${rest.className || ""} ${src === BLANK ? "pic-loading" : ""}`} />;
+}
 
 
 
@@ -35,7 +78,11 @@ function b64ToBytes(b64) {
 /* ───────────────────────── App ───────────────────────── */
 
 export default function App({ k, me, partner, build }) {
+  KREF.k = k;
   const [doodles, setDoodles] = useState(null);
+  const [e2e, setE2e] = useState({ state: "checking" }); // checking | off | locked | on
+  const [showCode, setShowCode] = useState(false);
+  const [shared, setShared] = useState(null); // a song just saved from the Share menu
   const [drawing, setDrawing] = useState(null); // null | { base: url|null }
   const [viewing, setViewing] = useState(null); // { list, i }
   const [toast, setToast] = useState("");
@@ -65,7 +112,17 @@ export default function App({ k, me, partner, build }) {
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/doodles?k=${encodeURIComponent(k)}&limit=300`, { cache: "no-store" });
-      if (r.ok) setDoodles((await r.json()).doodles);
+      if (r.ok) {
+        const list = (await r.json()).doodles;
+        const key = getKey();
+        // Song details on locked doodles are unlocked here, on this device.
+        const open = await Promise.all(
+          list.map(async (d) =>
+            d.music?.enc ? { ...d, music: key ? await unlockJSON(key, d.music.enc).catch(() => null) : null } : d
+          )
+        );
+        setDoodles(open);
+      }
     } catch (_) {}
   }, [k]);
 
@@ -96,6 +153,7 @@ export default function App({ k, me, partner, build }) {
         setVapid(j.vapidPublicKey);
         setRemind(j.remind !== false);
         vapidOk = Boolean(j.vapidPublicKey);
+        await checkE2E(j.e2e);
       } catch (_) {}
 
       // Inside the Android app: notifications are native, not web push.
@@ -157,9 +215,103 @@ export default function App({ k, me, partner, build }) {
     flash(next ? "Evening reminder on" : "Evening reminder off");
   }
 
+  /* ───── end-to-end encryption ───── */
+
+  // A link with "#e=<code>" unlocks this device straight away.
+  async function checkE2E(server) {
+    let key = getKey();
+    const fromLink = (location.hash.match(/e=([A-Za-z0-9_-]+)/) || [])[1];
+    if (fromLink && validCode(fromLink) && server?.fp && (await fingerprint(fromLink)) === server.fp) {
+      setKey(fromLink);
+      key = fromLink;
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    if (!server?.fp) return setE2e({ state: "off" });
+    if (key && (await fingerprint(key)) === server.fp) {
+      setKey(key); // also hands it to the Android widget
+      return setE2e({ state: "on", fp: server.fp });
+    }
+    setE2e({ state: "locked", fp: server.fp });
+  }
+
+  async function turnOnE2E() {
+    const code = newKey();
+    const fp = await fingerprint(code);
+    const r = await fetch("/api/e2e", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, fp }) });
+    if (!r.ok) return flash("Couldn't switch it on. Try again?");
+    setKey(code);
+    setE2e({ state: "on", fp });
+    setShowCode(true);
+  }
+
+  async function unlock(code) {
+    const c = cleanCode(code);
+    if (!validCode(c) || (await fingerprint(c)) !== e2e.fp) return false;
+    setKey(c);
+    picCache.clear();
+    setE2e({ state: "on", fp: e2e.fp });
+    await load();
+    window.dispatchEvent(new Event("scribbles-unlocked"));
+    return true;
+  }
+
+  // Lock the doodles sent before encryption was switched on (runs quietly, once).
+  const migrated = useRef(false);
+  useEffect(() => {
+    if (e2e.state !== "on" || !doodles || migrated.current) return;
+    const todo = doodles.filter((d) => !d.e2e);
+    if (!todo.length) return;
+    migrated.current = true;
+    (async () => {
+      const key = getKey();
+      let n = 0;
+      for (const d of todo) {
+        try {
+          const r = await fetch(`/api/image/${d.id}?k=${encodeURIComponent(k)}`);
+          if (!r.ok || r.headers.get("x-e2e") === "1") continue;
+          const image = "e2e:" + toB64(await lockBytes(key, new Uint8Array(await r.arrayBuffer())));
+          const music = d.music && !d.music.enc ? { enc: await lockJSON(key, d.music) } : null;
+          const w = await fetch(`/api/image/${d.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, image, music }) });
+          if (w.ok) n++;
+        } catch (_) {}
+      }
+      if (n) { flash(`Locked ${n} older doodle${n > 1 ? "s" : ""} 🔒`); picCache.clear(); load(); }
+    })();
+  }, [e2e.state, doodles, k, load]);
+
+  /* ───── songs from the Share menu ───── */
+  const saveSong = useCallback(async (text) => {
+    const url = findLink(text);
+    if (!url) return flash("That doesn't look like a link");
+    const key = getKey();
+    if (!key) return flash("Switch on encryption first, then share again");
+    try {
+      const r = await fetch("/api/music", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, url }) });
+      const j = await r.json();
+      if (!r.ok) return flash(j.error || "Couldn't read that link");
+      const song = { ...describeSong({ ...j, url }), by: me.id, at: Date.now() };
+      await fetch("/api/songs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, enc: await lockJSON(key, song) }) });
+      setShared(song);
+    } catch (_) {
+      flash("Couldn't save that song");
+    }
+  }, [k, me.id]);
+
+  useEffect(() => {
+    window.scribblesShare = saveSong; // the Android app calls this when you Share → Scribbles
+    const q = new URLSearchParams(location.search).get("share"); // iPhone Shortcut path
+    if (q && e2e.state === "on") {
+      history.replaceState(null, "", location.pathname);
+      saveSong(q);
+    }
+    return () => { delete window.scribblesShare; };
+  }, [saveSong, e2e.state]);
+
   function copyWidgetScript() {
     try {
-      navigator.clipboard.writeText(widgetScript);
+      const key = getKey();
+      const text = key ? widgetScript.replace(/(MY_LINK = "[^"#]+)"/, `$1#e=${key}"`) : widgetScript;
+      navigator.clipboard.writeText(text);
       flash("Copied. Now follow step 2 below");
     } catch (_) {
       flash("Couldn't copy. Try again");
@@ -223,6 +375,19 @@ export default function App({ k, me, partner, build }) {
 
       {tab === "album" && <Album doodles={doodles} me={me} partner={partner} img={img} open={(list, i) => setViewing({ list, i })} />}
 
+      {e2e.state === "locked" && <UnlockGate partner={partner} onUnlock={unlock} />}
+
+      {e2e.state === "off" && (
+        <section className="lock-card">
+          <div className="lock-ico">🔒</div>
+          <div>
+            <b>Make it just the two of you</b>
+            <p>Lock every doodle, photo and song on your phones before it's uploaded. The servers only ever see scrambled data.</p>
+          </div>
+          <button className="btn primary small-btn" onClick={turnOnE2E}>Turn on</button>
+        </section>
+      )}
+
       {tab === "today" && <>
 
       {(push === "off" || push === "native-off") && (
@@ -252,7 +417,7 @@ export default function App({ k, me, partner, build }) {
             <span className="tape" />
             <div className="pic">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={img(received.id)} alt={`Doodle from ${partner.name}`} />
+              <Pic id={received.id} alt={`Doodle from ${partner.name}`} />
               <MusicSpot d={received} />
               <Reacts d={received} me={me} partner={partner} />
             </div>
@@ -276,7 +441,7 @@ export default function App({ k, me, partner, build }) {
         {sent && (
           <div className="sent-line">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={img(sent.id)} alt="" />
+            <Pic id={sent.id} alt="" />
             <span>
               Your last one · {ago(sent.createdAt)} ·{" "}
               <b className={sent.seenAt ? "seen" : ""}>{sent.seenAt ? `seen ${ago(sent.seenAt)}` : "delivered"}</b>
@@ -299,7 +464,7 @@ export default function App({ k, me, partner, build }) {
                 onClick={() => setViewing({ list: doodles, i })}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={img(d.id)} alt="" loading="lazy" />
+                <Pic id={d.id} alt="" loading="lazy" />
                 <span className="who">{d.from === me.id ? "you" : partner.name}</span>
               </button>
             ))}
@@ -315,11 +480,35 @@ export default function App({ k, me, partner, build }) {
         <span className={`switch ${remind ? "on" : ""}`} aria-label={remind ? "On" : "Off"} />
       </button>
 
+      {e2e.state === "on" && (
+        <button className="link recopy" onClick={() => setShowCode(true)}>🔒 End-to-end encrypted · show unlock code</button>
+      )}
+
       {platform === "android-app" && (
         <div className="phone-row">
           <button className="btn ghost" onClick={() => window.ScribblesAndroid.addWidget()}>Add widget</button>
           <button className="btn ghost" onClick={() => window.ScribblesAndroid.openSettings()}>App settings</button>
         </div>
+      )}
+
+      {platform === "ios" && e2e.state === "on" && (
+        <details className="shortcut-card">
+          <summary>♫ Save songs from YouTube Music&apos;s Share button</summary>
+          <ol>
+            <li>Open the <b>Shortcuts</b> app → <b>+</b>. Tap the ⓘ at the bottom and switch on <b>Show in Share Sheet</b>.</li>
+            <li>Add the action <b>Text</b>, then paste this:
+              <button className="btn primary small-btn" onClick={() => {
+                try {
+                  navigator.clipboard.writeText(`${location.origin}/u/${k}?share=SONG#e=${getKey()}`);
+                  flash("Copied. Paste it into the Text action");
+                } catch (_) {}
+              }}>Copy shortcut link</button>
+            </li>
+            <li>In that text, select the word <b>SONG</b> and replace it with the <b>Shortcut Input</b> variable.</li>
+            <li>Add the action <b>Open URLs</b>. Name the shortcut <b>Scribbles</b>.</li>
+          </ol>
+          <p className="muted">Now in YouTube Music: Share → Scribbles. The song is saved (locked) to your songs.</p>
+        </details>
       )}
 
       {platform === "ios" && widgetDone && (
@@ -357,14 +546,31 @@ export default function App({ k, me, partner, build }) {
           partner={partner}
           onClose={() => setViewing(null)}
           onReact={react}
-          onDrawOn={(d) => {
-            setDrawing({ base: img(d.id) });
+          onDrawOn={async (d) => {
+            setDrawing({ base: await picURL(d.id) });
             setViewing(null);
           }}
         />
       )}
 
-      {drawing && <DrawSheet k={k} base={drawing.base} startWith={drawing.startWith} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
+      {showCode && <CodeSheet partner={partner} onClose={() => setShowCode(false)} />}
+
+      {shared && (
+        <div className="overlay" onClick={() => setShared(null)}>
+          <div className="song-saved" onClick={(e) => e.stopPropagation()}>
+            <div className="mini-record big" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${shared.vid}/hqdefault.jpg)` }} />
+            <p className="ss-kicker">♫ Saved to your songs</p>
+            <h3>{shared.title}</h3>
+            <p className="muted">{[shared.artist, shared.movie && `from ${shared.movie}`, shared.kind].filter(Boolean).join(" · ")}</p>
+            <div className="viewer-actions">
+              <button className="btn primary" onClick={() => { setDrawing({ base: null, music: shared }); setShared(null); }}>Send it to {partner.name}</button>
+              <button className="btn ghost" onClick={() => setShared(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {drawing && <DrawSheet k={k} me={me} base={drawing.base} initialMusic={drawing.music} startWith={drawing.startWith} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
 
       <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
     </div>
@@ -376,7 +582,6 @@ export default function App({ k, me, partner, build }) {
 function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact }) {
   const [more, setMore] = useState(false);
   const d = list[i];
-  const src = img(d.id);
   const mine = d.from === me.id;
   const touch = useRef(null);
   const prev = () => i > 0 && setI(i - 1);
@@ -394,7 +599,7 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact })
 
   async function share() {
     try {
-      const blob = await (await fetch(src)).blob();
+      const blob = await (await fetch(await picURL(d.id))).blob();
       if (window.ScribblesAndroid) {
         const reader = new FileReader();
         reader.onload = () => window.ScribblesAndroid.saveImage(reader.result);
@@ -422,7 +627,7 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact })
       >
         <div className="viewer-img">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img key={d.id} src={src} alt="" />
+          <Pic key={d.id} id={d.id} alt="" />
           <MusicSpot key={"m" + d.id} d={d} />
           <Reacts d={d} me={me} partner={partner} />
           {list.length > 1 && (
@@ -513,7 +718,7 @@ function Album({ doodles, me, partner, img, open }) {
                 {items.slice(0, 3).map((d) => (
                   <div key={d.id} className="peek">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img(d.id)} alt="" loading="lazy" />
+                    <Pic id={d.id} alt="" loading="lazy" />
                   </div>
                 ))}
               </div>
@@ -534,7 +739,7 @@ function Album({ doodles, me, partner, img, open }) {
                 {items.map((d) => (
                   <button key={d.id} className={`tile ${d.from === me.id ? "mine" : "theirs"}`} onClick={() => open(list, list.indexOf(d))}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img(d.id)} alt="" loading="lazy" />
+                    <Pic id={d.id} alt="" loading="lazy" />
                     <span className="day">{new Date(d.createdAt).getDate()}</span>
                     {(d.music || Object.values(d.reactions || {}).some(Boolean)) && (
                       <span className="tile-badges">
@@ -655,6 +860,60 @@ function ReactBar({ d, me, more, setMore, onReact }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Encryption screens ───────────────────────── */
+
+function CodeSheet({ partner, onClose }) {
+  const code = getKey();
+  const [copied, setCopied] = useState(false);
+  const msg = `Scribbles unlock code (keep it secret, it opens our doodles):\n${code}`;
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="code-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="lock-ico">🔒</div>
+        <h3>Your unlock code</h3>
+        <p className="muted">
+          Send this to {partner.name} once (WhatsApp is fine), and type it on any of your own devices the first time.
+          It never goes to the server, so if every copy is lost, the doodles can't be recovered.
+        </p>
+        <code className="code-box">{code}</code>
+        <div className="viewer-actions">
+          <button className="btn primary" onClick={async () => {
+            try {
+              if (navigator.share) await navigator.share({ text: msg });
+              else { await navigator.clipboard.writeText(msg); setCopied(true); }
+            } catch (_) {}
+          }}>Send to {partner.name}</button>
+          <button className="btn ghost" onClick={async () => { try { await navigator.clipboard.writeText(code); setCopied(true); } catch (_) {} }}>{copied ? "Copied ✓" : "Copy"}</button>
+          <button className="btn ghost" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnlockGate({ partner, onUnlock }) {
+  const [v, setV] = useState("");
+  const [bad, setBad] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="unlock-gate">
+      <div className="code-sheet">
+        <div className="lock-ico">🔒</div>
+        <h3>Scribbles is locked on this device</h3>
+        <p className="muted">Your doodles are end-to-end encrypted. Paste the unlock code (it's in your chat with {partner.name}) once, and this device will remember it.</p>
+        <textarea className="code-input" rows={2} value={v} onChange={(e) => { setV(e.target.value); setBad(false); }} placeholder="Paste the unlock code" />
+        {bad && <p className="err">That code doesn't match. Check you copied all of it.</p>}
+        <div className="viewer-actions">
+          <button className="btn ghost" onClick={async () => { try { setV(await navigator.clipboard.readText()); } catch (_) {} }}>Paste</button>
+          <button className="btn primary" disabled={!v || busy} onClick={async () => { setBusy(true); const ok = await onUnlock(v); setBusy(false); setBad(!ok); }}>
+            {busy ? "Checking…" : "Unlock"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

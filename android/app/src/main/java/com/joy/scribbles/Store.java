@@ -7,6 +7,10 @@ import android.graphics.BitmapFactory;
 
 import org.json.JSONObject;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -82,6 +86,7 @@ final class Store {
         if (id.equals(p.getString("lastId", null)) && imageFile(c).exists()) return false;
 
         byte[] bytes = getBytes(j.getString("image"));
+        if (j.optBoolean("e2e", false)) bytes = unlock(c, bytes);
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
@@ -111,6 +116,21 @@ final class Store {
                 .putLong("createdAt", j.optLong("createdAt", System.currentTimeMillis()))
                 .apply();
         return true;
+    }
+
+    /** End-to-end key (from the Scribbles app on this phone). Never sent anywhere. */
+    static void setKey(Context c, String code) {
+        prefs(c).edit().putString("e2eKey", code).apply();
+    }
+
+    /** blob = 12-byte IV | ciphertext | 16-byte tag (AES-256-GCM). */
+    static byte[] unlock(Context c, byte[] blob) throws Exception {
+        String code = prefs(c).getString("e2eKey", null);
+        if (code == null) throw new IOException("Locked. Open Scribbles once to unlock");
+        byte[] key = android.util.Base64.decode(code, android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING | android.util.Base64.NO_WRAP);
+        Cipher ci = Cipher.getInstance("AES/GCM/NoPadding");
+        ci.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, blob, 0, 12));
+        return ci.doFinal(blob, 12, blob.length - 12);
     }
 
     /** Called when the app is opened, so the doodle already on screen doesn't also ping. */

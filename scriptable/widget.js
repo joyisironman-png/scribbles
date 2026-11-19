@@ -1,6 +1,90 @@
 // Scribbles widget body. The small loader script on the iPhone downloads this
 // fresh on every run, so design changes never need a re-paste.
 
+// ---- AES-256-GCM decryption in plain JavaScript (Scriptable has no built-in crypto) ----
+// Only the counter-mode part is needed to read the picture; the tag at the end is skipped.
+const SBOX = (() => {
+  const s = new Uint8Array(256), inv = new Uint8Array(256);
+  let p = 1, q = 1;
+  do {
+    p = p ^ ((p << 1) & 0xff) ^ (p & 0x80 ? 0x1b : 0);
+    q ^= q << 1; q ^= q << 2; q ^= q << 4; q &= 0xff; if (q & 0x80) q ^= 0x09;
+    const x = q ^ ((q << 1) | (q >> 7)) ^ ((q << 2) | (q >> 6)) ^ ((q << 3) | (q >> 5)) ^ ((q << 4) | (q >> 4));
+    s[p] = (x ^ 0x63) & 0xff;
+  } while (p !== 1);
+  s[0] = 0x63;
+  return s;
+})();
+const xt = (a) => ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff;
+
+function expandKey(key) {
+  const Nk = key.length / 4, Nr = Nk + 6, w = new Uint8Array(16 * (Nr + 1));
+  w.set(key);
+  let rcon = 1;
+  for (let i = Nk; i < 4 * (Nr + 1); i++) {
+    let t = w.slice((i - 1) * 4, i * 4);
+    if (i % Nk === 0) {
+      t = new Uint8Array([SBOX[t[1]] ^ rcon, SBOX[t[2]], SBOX[t[3]], SBOX[t[0]]]);
+      rcon = xt(rcon);
+    } else if (Nk > 6 && i % Nk === 4) {
+      t = t.map((b) => SBOX[b]);
+    }
+    for (let j = 0; j < 4; j++) w[i * 4 + j] = w[(i - Nk) * 4 + j] ^ t[j];
+  }
+  return { w, Nr };
+}
+
+function encryptBlock({ w, Nr }, input, out) {
+  const s = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) s[i] = input[i] ^ w[i];
+  const t = new Uint8Array(16);
+  for (let r = 1; r <= Nr; r++) {
+    for (let i = 0; i < 16; i++) t[i] = SBOX[s[(i + 4 * (i % 4)) % 16]]; // SubBytes + ShiftRows
+    if (r !== Nr) {
+      for (let c = 0; c < 4; c++) {
+        const a0 = t[4 * c], a1 = t[4 * c + 1], a2 = t[4 * c + 2], a3 = t[4 * c + 3], x = a0 ^ a1 ^ a2 ^ a3;
+        s[4 * c] = a0 ^ x ^ xt(a0 ^ a1);
+        s[4 * c + 1] = a1 ^ x ^ xt(a1 ^ a2);
+        s[4 * c + 2] = a2 ^ x ^ xt(a2 ^ a3);
+        s[4 * c + 3] = a3 ^ x ^ xt(a3 ^ a0);
+      }
+    } else s.set(t);
+    for (let i = 0; i < 16; i++) s[i] ^= w[r * 16 + i];
+  }
+  out.set(s);
+}
+
+// blob = 12-byte IV | ciphertext | 16-byte tag  →  plaintext bytes
+function gcmDecrypt(keyBytes, blob) {
+  const ks = expandKey(keyBytes);
+  const iv = blob.subarray(0, 12), ct = blob.subarray(12, blob.length - 16);
+  const out = new Uint8Array(ct.length);
+  const ctr = new Uint8Array(16), pad = new Uint8Array(16);
+  ctr.set(iv);
+  let n = 2; // GCM: counter block 1 is for the tag, data starts at 2
+  for (let off = 0; off < ct.length; off += 16, n++) {
+    ctr[12] = (n >>> 24) & 255; ctr[13] = (n >>> 16) & 255; ctr[14] = (n >>> 8) & 255; ctr[15] = n & 255;
+    encryptBlock(ks, ctr, pad);
+    const len = Math.min(16, ct.length - off);
+    for (let i = 0; i < len; i++) out[off + i] = ct[off + i] ^ pad[i];
+  }
+  return out;
+}
+
+function b64uBytes(s) {
+  const t = s.replace(/-/g, "+").replace(/_/g, "/");
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const out = [];
+  let buf = 0, bits = 0;
+  for (const ch of t) {
+    const v = A.indexOf(ch);
+    if (v < 0) continue;
+    buf = (buf << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; out.push((buf >> bits) & 255); }
+  }
+  return new Uint8Array(out);
+}
+
 const INK = new Color("#1F1B18");
 const SOFT = new Color("#7A6E62");
 const CREAM = "#FBF6EC";
@@ -151,7 +235,8 @@ module.exports.run = async function (MY_LINK) {
     message(w, "Add your link", "Copy the widget script again from the Scribbles app.");
     return w;
   }
-  w.url = `${m[1]}/u/${m[2]}`; // tap → open Scribbles to draw back
+  const key = (MY_LINK.match(/#e=([A-Za-z0-9_-]+)/) || [])[1];
+  w.url = `${m[1]}/u/${m[2]}${key ? "#e=" + key : ""}`; // tap → open Scribbles to draw back (and unlock it)
 
   let d = null;
   try {
@@ -160,10 +245,25 @@ module.exports.run = async function (MY_LINK) {
     d = await req.loadJSON();
     if (d.has) {
       const old = fm.fileExists(cacheMeta) ? JSON.parse(fm.readString(cacheMeta)) : {};
-      if (old.id !== d.id || !fm.fileExists(cacheImg)) fm.writeImage(cacheImg, await new Request(d.image).loadImage());
+      if (old.id !== d.id || !fm.fileExists(cacheImg)) {
+        if (d.e2e) {
+          // End-to-end encrypted: unlock the picture here on the phone.
+          if (!key) throw new Error("locked");
+          const data = await new Request(d.image).load();
+          const plain = gcmDecrypt(b64uBytes(key), Uint8Array.from(data.getBytes()));
+          fm.writeImage(cacheImg, Image.fromData(Data.fromBytes(Array.from(plain))));
+        } else {
+          fm.writeImage(cacheImg, await new Request(d.image).loadImage());
+        }
+      }
       fm.writeString(cacheMeta, JSON.stringify(d));
     }
   } catch (e) {
+    if (String(e && e.message) === "locked") {
+      w.backgroundImage = paper(CREAM);
+      message(w, "Locked 🔒", "Open Scribbles and tap “Copy widget script again”, then paste it into Scriptable.");
+      return w;
+    }
     d = fm.fileExists(cacheMeta) ? JSON.parse(fm.readString(cacheMeta)) : null; // offline: show the last one
   }
 

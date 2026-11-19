@@ -16,7 +16,8 @@ export async function GET(req) {
   const origin = u.origin;
   if (u.searchParams.get("format") === "png") {
     if (!d) return json({ has: false }, 404);
-    const [, mime, b64] = /^data:([^;]+);base64,(.*)$/.exec((await getImage(d.id)) || "") || [];
+    const stored = (await getImage(d.id)) || "";
+    const [, mime, b64] = stored.startsWith("e2e:") ? [null, "application/octet-stream", stored.slice(4)] : /^data:([^;]+);base64,(.*)$/.exec(stored) || [];
     if (!b64) return json({ has: false }, 404);
     return new Response(Buffer.from(b64, "base64"), { headers: { "content-type": mime, "cache-control": "no-store" } });
   }
@@ -26,6 +27,7 @@ export async function GET(req) {
     fromName: a.partner.name,
     createdAt: d?.createdAt ?? null,
     bg: d?.bg ?? null,
+    e2e: Boolean(d?.e2e),
     image: d ? `${origin}/api/image/${d.id}?k=${encodeURIComponent(k)}` : null,
     app: `${origin}/u/${encodeURIComponent(k)}`,
     // Used by the Android app for its own 8 pm reminder.

@@ -16,11 +16,19 @@ export function videoId(url) {
   return null;
 }
 
-// ?k=KEY&url=<YouTube link>  ->  { id, title, author }
+// POST { k, url } (keeps the link out of request logs)  ->  { id, title, author }. Nothing is stored.
+export async function POST(req) {
+  const body = await req.json().catch(() => ({}));
+  return lookup(body.k, body.url);
+}
 export async function GET(req) {
   const p = new URL(req.url).searchParams;
-  if (!auth(p.get("k"))) return json({ error: "bad key" }, 401);
-  const id = videoId(p.get("url"));
+  return lookup(p.get("k"), p.get("url"));
+}
+
+async function lookup(k, url) {
+  if (!auth(k)) return json({ error: "bad key" }, 401);
+  const id = videoId(url);
   if (!id || !/^[\w-]{11}$/.test(id)) return json({ error: "That doesn't look like a YouTube or YouTube Music link." }, 400);
   let title = "", author = "";
   try {
