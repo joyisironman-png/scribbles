@@ -1,19 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DrawSheet, { SIZE } from "./Editor";
 
-const SIZE = 900; // drawings are saved as 900×900 squares
 
-const INKS = ["#1F1B18", "#E5484D", "#F2994A", "#F5C842", "#3BA272", "#3E7BFA", "#8E5CF6", "#EF6FA6", "#FFFFFF"];
-const SIZES = [6, 14, 30];
-const PAPERS = [
-  { name: "Paper", c: "#FBF6EC" },
-  { name: "Blush", c: "#FCE3E1" },
-  { name: "Mint", c: "#DDF2E3" },
-  { name: "Sky", c: "#DCE8FB" },
-  { name: "Butter", c: "#FFF0BF" },
-  { name: "Night", c: "#1E2233" },
-];
 
 // iPhone or iPad (iPadOS Safari pretends to be a Mac, but has a touch screen).
 const isIOSDevice = () =>
@@ -176,6 +166,22 @@ export default function App({ k, me, partner }) {
     fetch("/api/seen", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, id: received.id }) });
   }, [received, k]);
 
+  // React to a doodle (tap the same emoji again to take it back).
+  async function react(d, emoji) {
+    const mine = d.reactions?.[me.id];
+    const next = mine === emoji ? "" : emoji;
+    const patch = (x) => (x.id === d.id ? { ...x, reactions: { ...(x.reactions || {}), [me.id]: next || undefined } } : x);
+    setDoodles((list) => list.map(patch));
+    setViewing((v) => (v ? { ...v, list: v.list.map(patch) } : v));
+    if (next) {
+      try {
+        const r = [next, ...JSON.parse(localStorage.getItem("scribbles-recent-react") || "[]").filter((e) => e !== next)].slice(0, 6);
+        localStorage.setItem("scribbles-recent-react", JSON.stringify(r));
+      } catch (_) {}
+    }
+    await fetch("/api/react", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, id: d.id, emoji: next }) });
+  }
+
   function onSent(d) {
     setDrawing(null);
     setDoodles((list) => [d, ...(list || [])]);
@@ -228,11 +234,15 @@ export default function App({ k, me, partner }) {
         {doodles === null ? (
           <div className="frame skeleton" />
         ) : received ? (
-          <button className="frame tilt" onClick={() => setViewing({ list: [received], i: 0 })} aria-label="Open doodle">
+          <div className="frame tilt" role="button" onClick={() => setViewing({ list: doodles, i: doodles.indexOf(received) })} aria-label="Open doodle">
             <span className="tape" />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={img(received.id)} alt={`Doodle from ${partner.name}`} />
-          </button>
+            <div className="pic">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={img(received.id)} alt={`Doodle from ${partner.name}`} />
+              <MusicSpot d={received} />
+              <Reacts d={received} me={me} partner={partner} />
+            </div>
+          </div>
         ) : (
           <div className="frame empty">
             <p className="empty-title">Nothing yet</p>
@@ -332,6 +342,7 @@ export default function App({ k, me, partner }) {
           me={me}
           partner={partner}
           onClose={() => setViewing(null)}
+          onReact={react}
           onDrawOn={(d) => {
             setDrawing({ base: img(d.id) });
             setViewing(null);
@@ -348,7 +359,8 @@ export default function App({ k, me, partner }) {
 
 /* ───────────────────────── Viewer ───────────────────────── */
 
-function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn }) {
+function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact }) {
+  const [more, setMore] = useState(false);
   const d = list[i];
   const src = img(d.id);
   const mine = d.from === me.id;
@@ -397,6 +409,8 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn }) {
         <div className="viewer-img">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img key={d.id} src={src} alt="" />
+          <MusicSpot key={"m" + d.id} d={d} />
+          <Reacts d={d} me={me} partner={partner} />
           {list.length > 1 && (
             <>
               <button className="nav-arrow left" onClick={prev} disabled={i === 0} aria-label="Newer">‹</button>
@@ -412,6 +426,7 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn }) {
             {list.length > 1 && ` · ${i + 1} of ${list.length}`}
           </span>
         </div>
+        <ReactBar d={d} me={me} more={more} setMore={setMore} onReact={(e) => onReact(d, e)} />
         <div className="viewer-actions">
           <button className="btn primary" onClick={() => onDrawOn(d)}>Draw on this</button>
           <button className="btn ghost" onClick={share}>Save</button>
@@ -507,6 +522,12 @@ function Album({ doodles, me, partner, img, open }) {
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={img(d.id)} alt="" loading="lazy" />
                     <span className="day">{new Date(d.createdAt).getDate()}</span>
+                    {(d.music || Object.values(d.reactions || {}).some(Boolean)) && (
+                      <span className="tile-badges">
+                        {d.music && <i>♫</i>}
+                        {Object.values(d.reactions || {}).filter(Boolean).map((e, n) => <i key={n}>{e}</i>)}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -519,625 +540,89 @@ function Album({ doodles, me, partner, img, open }) {
   );
 }
 
-/* ───────────────────────── Drawing ───────────────────────── */
 
-const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+/* ───────────────────────── Music & reactions ───────────────────────── */
 
-// Colour families, each with six shades from light to dark.
-const FAMILIES = [
-  { name: "Red", shades: ["#FECACA", "#F87171", "#EF4444", "#DC2626", "#B91C1C", "#7F1D1D"] },
-  { name: "Orange", shades: ["#FED7AA", "#FB923C", "#F97316", "#EA580C", "#C2410C", "#7C2D12"] },
-  { name: "Yellow", shades: ["#FEF08A", "#FDE047", "#FACC15", "#EAB308", "#CA8A04", "#854D0E"] },
-  { name: "Green", shades: ["#BBF7D0", "#4ADE80", "#22C55E", "#16A34A", "#15803D", "#14532D"] },
-  { name: "Teal", shades: ["#99F6E4", "#2DD4BF", "#14B8A6", "#0D9488", "#0F766E", "#134E4A"] },
-  { name: "Blue", shades: ["#BFDBFE", "#60A5FA", "#3B82F6", "#2563EB", "#1D4ED8", "#1E3A8A"] },
-  { name: "Purple", shades: ["#DDD6FE", "#A78BFA", "#8B5CF6", "#7C3AED", "#6D28D9", "#4C1D95"] },
-  { name: "Pink", shades: ["#FBCFE8", "#F472B6", "#EC4899", "#DB2777", "#BE185D", "#831843"] },
-  { name: "Brown", shades: ["#E7D3C1", "#C8A27C", "#A47551", "#85593A", "#6B4226", "#3E2516"] },
-  { name: "Grey", shades: ["#FFFFFF", "#E5E5E5", "#A3A3A3", "#525252", "#262626", "#1F1B18"] },
-];
-const BRUSHES = [
-  { id: "pen", name: "Pen", hint: "Pressure & speed" },
-  { id: "marker", name: "Marker", hint: "Even line" },
-  { id: "highlight", name: "Highlighter", hint: "See-through" },
-];
-const STICKERS = ["❤️", "✨", "🌸", "⭐", "🦋", "😘", "🌙", "☀️", "🎀", "🍓", "🌷", "💌"];
-const FILTERS = [
-  { id: "none", name: "Original" },
-  { id: "warm", name: "Warm" },
-  { id: "film", name: "Film" },
-  { id: "mono", name: "Mono" },
-  { id: "fade", name: "Dreamy" },
-  { id: "pop", name: "Pop" },
-];
+const QUICK_REACTS = ["❤️", "😂", "😮", "😢", "🙏", "👍"];
+const MORE_REACTS = ["🥹", "😍", "🥰", "😘", "🫶", "💕", "💖", "🔥", "✨", "🎉", "😭", "🤣", "😅", "😳", "🙈", "😴", "🤍", "💯", "👏", "🙌", "💐", "🌸", "🌙", "⭐", "🎶", "🍫", "☕", "🧸", "🤗", "😌", "🤭", "😤", "🥺", "💀", "👀", "🤞"];
 
-// Stroke width at a point. Pen: Apple Pencil pressure, or speed for fingers/mouse.
-function widthAt(s, pt) {
-  if (s.brush === "highlight") return s.size * 2.2;
-  if (s.brush === "marker" || s.erase) return s.size;
-  const p = pt[2] ?? 0.5;
-  return s.size * (0.18 + Math.pow(p, 0.8) * 1.55);
-}
-
-function styleFor(ctx, s) {
-  ctx.globalCompositeOperation = s.erase ? "destination-out" : "source-over";
-  ctx.strokeStyle = ctx.fillStyle = s.erase ? "#000" : s.color;
-  ctx.lineCap = s.brush === "highlight" ? "square" : "round";
-  ctx.lineJoin = "round";
-}
-
-function drawSegment(ctx, s, n) {
-  const p = s.pts;
-  ctx.lineWidth = s.brush === "pen" ? (widthAt(s, p[n - 1]) + widthAt(s, p[n - 2])) / 2 : widthAt(s, p[n - 1]);
-  ctx.beginPath();
-  if (n === 2) {
-    const m = mid(p[0], p[1]);
-    ctx.moveTo(p[0][0], p[0][1]);
-    ctx.lineTo(m[0], m[1]);
-  } else {
-    const a = mid(p[n - 3], p[n - 2]);
-    const b = mid(p[n - 2], p[n - 1]);
-    ctx.moveTo(a[0], a[1]);
-    ctx.quadraticCurveTo(p[n - 2][0], p[n - 2][1], b[0], b[1]);
-  }
-  ctx.stroke();
-}
-
-function strokeOnto(ctx, s) {
-  styleFor(ctx, s);
-  const p = s.pts;
-  if (s.brush !== "highlight") {
-    ctx.beginPath();
-    ctx.arc(p[0][0], p[0][1], widthAt(s, p[0]) / 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  for (let n = 2; n <= p.length; n++) drawSegment(ctx, s, n);
-  if (p.length > 1) {
-    const last = p[p.length - 1];
-    const m = mid(p[p.length - 2], last);
-    ctx.lineWidth = widthAt(s, last);
-    ctx.beginPath();
-    ctx.moveTo(m[0], m[1]);
-    ctx.lineTo(last[0], last[1]);
-    ctx.stroke();
-  } else if (s.brush === "highlight") {
-    ctx.fillRect(p[0][0] - s.size, p[0][1] - s.size, s.size * 2, s.size * 2);
-  }
-}
-
-let scratch = null; // reused canvas so a highlighter stroke never darkens where it overlaps itself
-function renderItem(ctx, s) {
-  if (s.kind === "stamp") {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.font = `${s.size}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(s.emoji, s.x, s.y);
-    return;
-  }
-  if (s.kind === "text") {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.font = `600 ${s.size}px Caveat, "Bradley Hand", cursive`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = s.size / 7;
-    ctx.strokeStyle = s.color === "#FFFFFF" ? "rgba(0,0,0,.35)" : "rgba(255,255,255,.85)";
-    s.text.split("\n").forEach((line, i, all) => {
-      const y = s.y + (i - (all.length - 1) / 2) * s.size * 1.05;
-      ctx.strokeText(line, s.x, y);
-      ctx.fillStyle = s.color;
-      ctx.fillText(line, s.x, y);
-    });
-    return;
-  }
-  if (s.brush === "highlight" && !s.erase) {
-    if (!scratch) { scratch = document.createElement("canvas"); scratch.width = scratch.height = SIZE; }
-    const sc = scratch.getContext("2d");
-    sc.globalCompositeOperation = "source-over";
-    sc.clearRect(0, 0, SIZE, SIZE);
-    strokeOnto(sc, s);
-    ctx.globalCompositeOperation = "source-over";
-    ctx.globalAlpha = 0.38;
-    ctx.drawImage(scratch, 0, 0);
-    ctx.globalAlpha = 1;
-    return;
-  }
-  strokeOnto(ctx, s);
-}
-
-// Photo filters done by hand, so they look the same in every browser.
-function applyFilter(ctx, id) {
-  if (id === "none") return;
-  const img = ctx.getImageData(0, 0, SIZE, SIZE);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    let r = d[i], g = d[i + 1], b = d[i + 2];
-    const l = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (id === "warm") { r = r * 1.08 + 10; g = g * 1.02 + 4; b = b * 0.9; }
-    else if (id === "film") {
-      r = 0.85 * r + 0.15 * l + 14; g = 0.85 * g + 0.15 * l + 6; b = 0.8 * b + 0.2 * l + 2;
-      r = (r - 128) * 0.92 + 128; g = (g - 128) * 0.92 + 128; b = (b - 128) * 0.88 + 128;
-    }
-    else if (id === "mono") { const c = (l - 128) * 1.15 + 128; r = g = b = c; }
-    else if (id === "fade") { r = r * 0.82 + 52; g = g * 0.8 + 46; b = b * 0.82 + 56; }
-    else if (id === "pop") {
-      r = l + (r - l) * 1.35; g = l + (g - l) * 1.35; b = l + (b - l) * 1.35;
-      r = (r - 128) * 1.1 + 128; g = (g - 128) * 1.1 + 128; b = (b - 128) * 1.1 + 128;
-    }
-    d[i] = r; d[i + 1] = g; d[i + 2] = b;
-  }
-  ctx.putImageData(img, 0, 0);
-  if (id === "film" || id === "fade") {
-    const v = ctx.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.35, SIZE / 2, SIZE / 2, SIZE * 0.75);
-    v.addColorStop(0, "rgba(0,0,0,0)");
-    v.addColorStop(1, id === "film" ? "rgba(40,20,0,.28)" : "rgba(255,240,245,.25)");
-    ctx.fillStyle = v;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-}
-
-// Read a picked photo; converts iPhone HEIC photos in browsers that can't open them.
-async function readPhoto(file) {
-  const tryLoad = (blob) =>
-    new Promise((ok, bad) => {
-      const im = new Image();
-      im.onload = () => ok(im);
-      im.onerror = bad;
-      im.src = URL.createObjectURL(blob);
-    });
-  try {
-    return await tryLoad(file);
-  } catch (_) {
-    if (!window.heic2any) {
-      await new Promise((ok, bad) => {
-        const sc = document.createElement("script");
-        sc.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
-        sc.onload = ok;
-        sc.onerror = bad;
-        document.head.append(sc);
-      });
-    }
-    const out = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
-    return tryLoad(Array.isArray(out) ? out[0] : out);
-  }
-}
-
-const loadRecents = () => {
-  try { return JSON.parse(localStorage.getItem("scribbles-recent-colors") || "[]"); } catch (_) { return []; }
-};
-
-function DrawSheet({ k, base, startWith, partner, onClose, onSent }) {
-  const baseRef = useRef(null);
-  const inkRef = useRef(null);
-  const liveRef = useRef(null);
-  const libRef = useRef(null);
-  const camRef = useRef(null);
-  const history = useRef([]); // strokes, stamps, text and {clear:true} markers
-  const live = useRef(null);
-  const frame = useRef(0);
-  const penSeen = useRef(false);
-  const [color, setColor] = useState("#1F1B18");
-  const [family, setFamily] = useState(9);
-  const [recents, setRecents] = useState([]);
-  const [size, setSize] = useState(10);
-  const [brush, setBrush] = useState("pen");
-  const [smooth, setSmooth] = useState(0.5);
-  const [tool, setTool] = useState("draw"); // draw | erase | sticker | text
-  const [sticker, setSticker] = useState(STICKERS[0]);
-  const [paper, setPaper] = useState(PAPERS[0].c);
-  const [baseImg, setBaseImg] = useState(null);
-  const [photo, setPhoto] = useState(null);
-  const [fit, setFit] = useState("fill");
-  const [filter, setFilter] = useState("none");
-  const [textAt, setTextAt] = useState(null);
-  const [draft, setDraft] = useState("");
-  const [count, setCount] = useState(0);
-  const [sending, setSending] = useState(false);
-  const [err, setErr] = useState("");
-  const [touchy, setTouchy] = useState(true);
-
+// The record on a picture: tap it and the song plays inside the spinning circle.
+function MusicSpot({ d }) {
+  const m = d.music;
+  const [on, setOn] = useState(false);
+  const ref = useRef(null);
+  const [px, setPx] = useState(100);
   useEffect(() => {
-    document.body.style.overflow = "hidden";
-    document.body.classList.add("drawing");
-    setTouchy(window.matchMedia("(pointer: coarse)").matches);
-    setRecents(loadRecents());
-    document.fonts?.load?.('600 60px "Caveat"').catch(() => {});
-    if (startWith === "library") setTimeout(() => libRef.current?.click(), 250);
-    // iPad Safari: stop long-presses on the canvas from selecting text or showing the magnifier.
-    const el = liveRef.current;
-    const stop = (e) => e.preventDefault();
-    el.addEventListener("touchstart", stop, { passive: false });
-    el.addEventListener("touchmove", stop, { passive: false });
-    el.addEventListener("contextmenu", stop);
-    return () => {
-      document.body.style.overflow = "";
-      document.body.classList.remove("drawing");
-      el.removeEventListener("touchstart", stop);
-      el.removeEventListener("touchmove", stop);
-      el.removeEventListener("contextmenu", stop);
-    };
-  }, [startWith]);
-
-  useEffect(() => {
-    if (!base) return;
-    const im = new Image();
-    im.onload = () => setBaseImg(im);
-    im.src = base;
-  }, [base]);
-
-  useEffect(() => {
-    const ctx = baseRef.current.getContext("2d", { willReadFrequently: true });
-    ctx.clearRect(0, 0, SIZE, SIZE);
-    ctx.fillStyle = photo ? "#FFFFFF" : paper;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    if (photo) {
-      const r = photo.naturalWidth / photo.naturalHeight;
-      const cover = fit === "fill";
-      let w = SIZE, h = SIZE;
-      if ((r > 1) === cover) { h = SIZE; w = SIZE * r; } else { w = SIZE; h = SIZE / r; }
-      if (!cover) { ctx.fillStyle = paper === "#1E2233" ? paper : "#FFFDF8"; ctx.fillRect(0, 0, SIZE, SIZE); }
-      ctx.drawImage(photo, (SIZE - w) / 2, (SIZE - h) / 2, w, h);
-      applyFilter(ctx, filter);
-    } else if (baseImg) {
-      ctx.drawImage(baseImg, 0, 0, SIZE, SIZE);
-    }
-  }, [paper, baseImg, photo, fit, filter]);
-
-  useEffect(() => {
-    if (paper === "#1E2233" && color === "#1F1B18") setColor("#FFFFFF");
-    if (paper !== "#1E2233" && color === "#FFFFFF") setColor("#1F1B18");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paper]);
-
-  function pickColor(c) {
-    setColor(c);
-    if (tool === "erase") setTool("draw");
-    const next = [c, ...recents.filter((x) => x !== c)].slice(0, 8);
-    setRecents(next);
-    try { localStorage.setItem("scribbles-recent-colors", JSON.stringify(next)); } catch (_) {}
-  }
-
-  const activeItems = () => {
-    const h = history.current;
-    let i = h.length - 1;
-    while (i >= 0 && !h[i].clear) i--;
-    return h.slice(i + 1);
-  };
-
-  function redraw() {
-    const ctx = inkRef.current.getContext("2d");
-    ctx.globalCompositeOperation = "source-over";
-    ctx.clearRect(0, 0, SIZE, SIZE);
-    activeItems().forEach((s) => renderItem(ctx, s));
-  }
-
-  function commit(item) {
-    history.current.push(item);
-    redraw();
-    setCount((c) => c + 1);
-  }
-
-  const toXY = (e) => {
-    const r = liveRef.current.getBoundingClientRect();
-    return [((e.clientX - r.left) * SIZE) / r.width, ((e.clientY - r.top) * SIZE) / r.height];
-  };
-
-  // Redraw the stroke in progress once per frame, so long strokes stay smooth.
-  function paintLive() {
-    frame.current = 0;
-    const s = live.current;
-    const ctx = liveRef.current.getContext("2d");
-    ctx.clearRect(0, 0, SIZE, SIZE);
-    if (s && !s.erase) renderItem(ctx, s);
-  }
-  const schedule = () => { if (!frame.current) frame.current = requestAnimationFrame(paintLive); };
-
-  function down(e) {
-    if (e.pointerType === "pen") penSeen.current = true;
-    if (e.pointerType === "touch" && penSeen.current) return; // palm rejection once a Pencil is in use
-    if (live.current) return;
-    e.preventDefault();
-    const [x, y] = toXY(e);
-    if (tool === "sticker") return commit({ kind: "stamp", emoji: sticker, x, y, size: 50 + size * 3.2 });
-    if (tool === "text") { setTextAt({ x, y }); setDraft(""); return; }
-    try { liveRef.current.setPointerCapture(e.pointerId); } catch (_) {}
-    const pencil = e.pointerType === "pen";
-    const p0 = pencil ? clamp(e.pressure || 0.5, 0.05, 1) : 0.55;
-    const s = {
-      color, size: tool === "erase" ? size * 2.2 : size, brush, erase: tool === "erase",
-      pts: [[x, y, p0]], pid: e.pointerId, pencil, t: e.timeStamp, raw: [x, y],
-    };
-    live.current = s;
-    if (s.erase) {
-      const ctx = inkRef.current.getContext("2d");
-      styleFor(ctx, s);
-      ctx.beginPath();
-      ctx.arc(x, y, s.size / 2, 0, Math.PI * 2);
-      ctx.fill();
-    } else schedule();
-  }
-
-  function move(e) {
-    const s = live.current;
-    if (!s || e.pointerId !== s.pid) return;
-    const batch = e.nativeEvent.getCoalescedEvents?.();
-    const evs = batch && batch.length ? batch : [e.nativeEvent];
-    for (const ev of evs) {
-      const [rx, ry] = toXY(ev);
-      const prev = s.pts[s.pts.length - 1];
-      // Steadying: each new point only goes part of the way towards the finger/pen.
-      const k = s.erase ? 0 : smooth * 0.85;
-      const x = prev[0] + (rx - prev[0]) * (1 - k);
-      const y = prev[1] + (ry - prev[1]) * (1 - k);
-      const dist = Math.hypot(x - prev[0], y - prev[1]);
-      if (dist < 1.2) continue;
-      let p;
-      if (s.pencil) p = clamp(ev.pressure || prev[2], 0.05, 1);
-      else {
-        // Fingers and mice: faster strokes get thinner, like a real brush.
-        const dt = Math.max(1, ev.timeStamp - s.t);
-        p = clamp(0.9 - (dist / dt) * 0.12, 0.28, 0.9);
-      }
-      p = prev[2] * 0.65 + p * 0.35; // ease pressure changes so the line glides
-      s.t = ev.timeStamp;
-      s.pts.push([x, y, p]);
-      if (s.erase) {
-        const ctx = inkRef.current.getContext("2d");
-        styleFor(ctx, s);
-        drawSegment(ctx, s, s.pts.length);
-      }
-    }
-    if (!s.erase) schedule();
-  }
-
-  function up(e) {
-    const s = live.current;
-    if (!s || e.pointerId !== s.pid) return;
-    live.current = null;
-    const [rx, ry] = toXY(e);
-    const last = s.pts[s.pts.length - 1];
-    if (Math.hypot(rx - last[0], ry - last[1]) > 1) s.pts.push([rx, ry, last[2] * 0.7]); // finish where the pen lifted, tapering off
-    const { pid, pencil, t, raw, ...stroke } = s;
-    paintLive();
-    commit(stroke);
-  }
-
-  function placeText() {
-    const t = draft.trim();
-    if (t && textAt) commit({ kind: "text", text: t, x: textAt.x, y: textAt.y, size: 30 + size * 2, color });
-    setTextAt(null);
-    setDraft("");
-  }
-
-  function undo() {
-    history.current.pop();
-    redraw();
-    setCount((c) => c + 1);
-  }
-
-  function clearAll() {
-    if (!activeItems().length) return;
-    history.current.push({ clear: true });
-    redraw();
-    setCount((c) => c + 1);
-  }
-
-  async function onPick(e) {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
-    setErr("");
-    try {
-      setPhoto(await readPhoto(f));
-      setFilter("none");
-      setFit("fill");
-    } catch (_) {
-      setErr("Couldn't open that photo. Try a different one?");
-    }
-  }
-
-  const hasInk = useMemo(() => activeItems().some((s) => !s.erase), [count]); // eslint-disable-line react-hooks/exhaustive-deps
-  const canSend = hasInk || Boolean(photo);
-  const canUndo = history.current.length > 0;
-
-  async function send() {
-    setSending(true);
-    setErr("");
-    try {
-      const out = document.createElement("canvas");
-      out.width = out.height = SIZE;
-      const ctx = out.getContext("2d");
-      ctx.drawImage(baseRef.current, 0, 0);
-      ctx.drawImage(inkRef.current, 0, 0);
-      let data = photo ? out.toDataURL("image/jpeg", 0.88) : out.toDataURL("image/png");
-      if (data.length > 1_400_000) data = out.toDataURL("image/jpeg", 0.82);
-      const r = await fetch("/api/doodles", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ k, image: data, bg: base || photo ? null : paper }),
-      });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't send");
-      onSent((await r.json()).doodle);
-    } catch (e) {
-      setErr(e.message || "Couldn't send. Try again?");
-      setSending(false);
-    }
-  }
-
-  const previewW = tool === "erase" ? size * 2.2 : brush === "highlight" ? size * 2.2 : size;
-  const sizeLabel = tool === "sticker" ? "Sticker size" : tool === "text" ? "Text size" : tool === "erase" ? "Eraser size" : "Thickness";
-
+    if (!ref.current) return;
+    const ro = new ResizeObserver(() => setPx(ref.current?.offsetWidth || 100));
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  if (!m) return null;
+  const pct = (v) => `${(v / SIZE) * 100}%`;
+  // YouTube needs a 200px player, so it's laid out at that size and scaled to the circle.
+  const scale = px / 200;
   return (
-    <div className="sheet">
-      <div className="sheet-top">
-        <button className="icon" onClick={onClose} aria-label="Close">✕</button>
-        <div className="sheet-title">for <em>{partner.name}</em></div>
-        <div className="sheet-tools">
-          <button className="icon" onClick={undo} disabled={!canUndo} aria-label="Undo">↶</button>
-          <button className="icon" onClick={clearAll} disabled={!hasInk} aria-label="Clear">⌫</button>
-        </div>
-      </div>
-
-      <div className="sheet-body">
-        <div className="canvas-col">
-          <div className="canvas-wrap">
-            <canvas ref={baseRef} width={SIZE} height={SIZE} className="layer" />
-            <canvas ref={inkRef} width={SIZE} height={SIZE} className="layer" />
-            <canvas
-              ref={liveRef}
-              width={SIZE}
-              height={SIZE}
-              className={`layer ink tool-${tool}`}
-              onPointerDown={down}
-              onPointerMove={move}
-              onPointerUp={up}
-              onPointerCancel={up}
+    <div
+      ref={ref}
+      className={`music-spot ${on ? "on" : ""}`}
+      style={{ left: pct(m.x - m.r), top: pct(m.y - m.r), width: pct(m.r * 2) }}
+      onClick={(e) => { e.stopPropagation(); setOn(true); }}
+      title={`${m.title}${m.author ? " · " + m.author : ""}`}
+    >
+      {on ? (
+        <>
+          <div className="ms-disc">
+            <iframe
+              title={m.title}
+              src={`https://www.youtube-nocookie.com/embed/${m.id}?autoplay=1&playsinline=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${m.id}`}
+              allow="autoplay; encrypted-media"
+              style={{ width: 356, height: 200, transform: `translate(-50%, -50%) scale(${scale})` }}
             />
-            {textAt && (
-              <div className="text-pop" onPointerDown={(e) => e.stopPropagation()}>
-                <textarea
-                  autoFocus
-                  rows={2}
-                  value={draft}
-                  placeholder="Write something sweet…"
-                  onChange={(e) => setDraft(e.target.value)}
-                  style={{ color: color === "#FFFFFF" ? "#1F1B18" : color }}
-                />
-                <div className="text-pop-actions">
-                  <button className="chip" onClick={() => setTextAt(null)}>Cancel</button>
-                  <button className="chip on" onClick={placeText}>Add</button>
-                </div>
-              </div>
-            )}
           </div>
-        </div>
+          <button className="ms-stop" onClick={(e) => { e.stopPropagation(); setOn(false); }} aria-label="Stop">■</button>
+        </>
+      ) : (
+        <span className="ms-play" aria-label={`Play ${m.title}`}>▶</span>
+      )}
+    </div>
+  );
+}
 
-        <div className="side">
-          <div className="tools">
-            <div className="row modes">
-              {[["draw", "✎ Draw"], ["sticker", "✿ Stickers"], ["text", "Aa Text"], ["erase", "Eraser"]].map(([id, label]) => (
-                <button key={id} className={`chip ${tool === id ? "on" : ""}`} onClick={() => setTool(id)}>{label}</button>
-              ))}
-            </div>
+function Reacts({ d, me, partner }) {
+  const r = Object.entries(d.reactions || {}).filter(([, e]) => e);
+  if (!r.length) return null;
+  return (
+    <div className="reacts">
+      {r.map(([who, e]) => (
+        <span key={who} title={who === me.id ? "You" : partner.name}>
+          {e}<i>{who === me.id ? "you" : partner.name}</i>
+        </span>
+      ))}
+    </div>
+  );
+}
 
-            {tool === "draw" && (
-              <div className="row brushes">
-                {BRUSHES.map((b) => (
-                  <button key={b.id} className={`brush ${brush === b.id ? "on" : ""}`} onClick={() => setBrush(b.id)}>
-                    <b>{b.name}</b>
-                    <span>{b.hint}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {tool === "sticker" ? (
-              <div className="row stickers">
-                {STICKERS.map((st) => (
-                  <button key={st} className={`sticker ${sticker === st ? "on" : ""}`} onClick={() => setSticker(st)}>{st}</button>
-                ))}
-              </div>
-            ) : tool !== "erase" && (
-              <div className="palette">
-                <div className="families">
-                  {FAMILIES.map((f, i) => (
-                    <button
-                      key={f.name}
-                      className={`family ${family === i ? "on" : ""}`}
-                      style={{ "--c": f.shades[i === 9 ? 5 : 2] }}
-                      onClick={() => { setFamily(i); pickColor(f.shades[i === 9 ? 5 : 2]); }}
-                      aria-label={f.name}
-                    />
-                  ))}
-                </div>
-                <div className="shades">
-                  {FAMILIES[family].shades.map((c) => (
-                    <button key={c} className={`shade ${color === c ? "on" : ""}`} style={{ "--c": c }} onClick={() => pickColor(c)} aria-label={c} />
-                  ))}
-                </div>
-                {recents.length > 1 && (
-                  <div className="recents">
-                    <span className="label">Recent</span>
-                    {recents.map((c) => (
-                      <button key={c} className={`swatch mini ${color === c ? "on" : ""}`} style={{ "--c": c }} onClick={() => pickColor(c)} aria-label={c} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="slider-row">
-              <span className="label">{sizeLabel}</span>
-              <input type="range" min="1" max="60" step="1" value={size} onChange={(e) => setSize(Number(e.target.value))} />
-              <span className="preview">
-                <span
-                  style={{
-                    width: Math.max(3, Math.min(40, previewW / 1.5)),
-                    height: Math.max(3, Math.min(40, previewW / 1.5)),
-                    background: tool === "erase" ? "#B9AFA3" : color,
-                    opacity: brush === "highlight" && tool === "draw" ? 0.45 : 1,
-                  }}
-                />
-              </span>
-            </div>
-
-            {tool === "draw" && (
-              <div className="slider-row">
-                <span className="label">Smoothing</span>
-                <input type="range" min="0" max="0.9" step="0.05" value={smooth} onChange={(e) => setSmooth(Number(e.target.value))} />
-                <span className="preview text">{smooth < 0.15 ? "Off" : smooth < 0.55 ? "Soft" : "Silky"}</span>
-              </div>
-            )}
-
-            <div className="photo-block">
-              <div className="row">
-                <span className="label">Photo</span>
-                <div className="photo-btns">
-                  <button className="chip" onClick={() => libRef.current?.click()}>🖼 {photo ? "Change" : "Add photo"}</button>
-                  {touchy && <button className="chip" onClick={() => camRef.current?.click()}>📷 Camera</button>}
-                  {photo && <button className="chip" onClick={() => setPhoto(null)}>Remove</button>}
-                </div>
-              </div>
-              {photo && (
-                <>
-                  <div className="row">
-                    <span className="label">Frame</span>
-                    <div className="photo-btns">
-                      <button className={`chip ${fit === "fill" ? "on" : ""}`} onClick={() => setFit("fill")}>Fill square</button>
-                      <button className={`chip ${fit === "fit" ? "on" : ""}`} onClick={() => setFit("fit")}>Show whole</button>
-                    </div>
-                  </div>
-                  <div className="row filters-row">
-                    {FILTERS.map((f) => (
-                      <button key={f.id} className={`chip ${filter === f.id ? "on" : ""}`} onClick={() => setFilter(f.id)}>{f.name}</button>
-                    ))}
-                  </div>
-                </>
-              )}
-              <input ref={libRef} type="file" accept="image/*" hidden onChange={onPick} />
-              <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={onPick} />
-            </div>
-
-            {!base && !photo && (
-              <div className="row papers">
-                {PAPERS.map((p) => (
-                  <button key={p.c} className={`paper ${paper === p.c ? "on" : ""}`} style={{ "--c": p.c }} onClick={() => setPaper(p.c)}>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {err && <p className="err">{err}</p>}
-          <button className="btn primary send" disabled={!canSend || sending} onClick={send}>
-            {sending ? "Sending…" : `Send to ${partner.name}`}
-            {!sending && <span className="arrow">→</span>}
-          </button>
-        </div>
+function ReactBar({ d, me, more, setMore, onReact }) {
+  const mine = d.reactions?.[me.id];
+  let recent = [];
+  try { recent = JSON.parse(localStorage.getItem("scribbles-recent-react") || "[]"); } catch (_) {}
+  const quick = [...new Set([...recent, ...QUICK_REACTS])].slice(0, 7);
+  return (
+    <div className="react-bar">
+      <div className="react-row">
+        {quick.map((e) => (
+          <button key={e} className={`emo ${mine === e ? "on" : ""}`} onClick={() => onReact(e)} aria-label={`React ${e}`}>{e}</button>
+        ))}
+        <button className={`emo more ${more ? "on" : ""}`} onClick={() => setMore(!more)} aria-label="More reactions">＋</button>
       </div>
+      {more && (
+        <div className="react-more">
+          {MORE_REACTS.map((e) => (
+            <button key={e} className={`emo ${mine === e ? "on" : ""}`} onClick={() => { onReact(e); setMore(false); }}>{e}</button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -25,9 +25,20 @@ export async function POST(req) {
   if (m[2].length > MAX_BYTES) return json({ error: "drawing too large" }, 413);
 
   const bg = /^#[0-9A-Fa-f]{6}$/.test(body.bg || "") ? body.bg : null;
-  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: body.image, bg });
+  // Optional song attached as a record sticker: where it sits on the picture, and what it is.
+  const mu = body.music;
+  const music =
+    mu && /^[\w-]{11}$/.test(mu.id || "")
+      ? {
+          id: mu.id,
+          title: String(mu.title || "").slice(0, 120),
+          author: String(mu.author || "").slice(0, 80),
+          x: Number(mu.x) || 450, y: Number(mu.y) || 450, r: Math.max(20, Math.min(450, Number(mu.r) || 90)),
+        }
+      : null;
+  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: body.image, bg, music });
   await notify(a.partner.id, {
-    title: `${a.me.name} sent you a doodle`,
+    title: music ? `${a.me.name} sent you a doodle with a song ♫` : `${a.me.name} sent you a doodle`,
     body: "Tap to see it ✏️",
     url: "/",
     id: meta.id,
