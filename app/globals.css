@@ -505,3 +505,6 @@ body.drawing, .sheet, .sheet * { -webkit-user-select: none; user-select: none; -
 .music-spot:not(.playing) .ms-disc::after { display: none; }
 .ms-hint { position: absolute; left: 50%; bottom: -1.9em; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
   font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 99px; background: rgba(255,253,248,.92); color: var(--ink); box-shadow: 0 4px 10px -6px rgba(0,0,0,.4); }
+/* press & hold: the item lifts into move mode */
+.obj > * { transition: transform .15s ease, filter .15s ease; }
+.obj.lifted > *:not(.obj-del):not(.obj-handle) { transform: scale(1.05); filter: drop-shadow(0 10px 14px rgba(0,0,0,.35)); }

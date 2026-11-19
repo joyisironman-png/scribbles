@@ -769,6 +769,9 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
     a clean tap on text opens it, dragging onto the bin deletes.
   */
   const [guides, setGuides] = useState({ v: false, h: false });
+  const [lifted, setLifted] = useState(null);
+  const liftTimer = useRef(0);
+  const zTop = useRef(1);
   const [trash, setTrash] = useState({ show: false, hot: false });
   const buzz = () => navigator.vibrate?.(G.hapticMs);
 
@@ -780,12 +783,18 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
     e.stopPropagation();
     e.preventDefault();
     setSelected(o.id);
-    // bring to front
-    setObjects((list) => [...list.filter((x) => x.id !== o.id), list.find((x) => x.id === o.id)]);
+    // bring to front (a z number, so the pressed element never moves in the page mid-gesture)
+    zTop.current += 1;
+    updateObject(o.id, { z: zTop.current });
     try { wrapRef.current.setPointerCapture(e.pointerId); } catch (_) {}
     const g = { kind: "obj", id: o.id, mode, pts: new Map([[e.pointerId, [e.clientX, e.clientY]]]), t0: performance.now(), moved: 0, multi: false, snap: {} };
     snapshot(o.id, g);
     gesture.current = g;
+    // after a short hold the item lifts into move mode (and a release won't open the editor)
+    clearTimeout(liftTimer.current);
+    liftTimer.current = setTimeout(() => {
+      if (gesture.current === g) { g.lifted = true; setLifted(o.id); buzz(); }
+    }, G.liftAfterMs);
   }
 
   // A second finger anywhere on the picture joins the current move as a pinch.
@@ -810,6 +819,7 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
     const ids = [...g.pts.keys()];
     const first = st.pts.get(ids[0]);
     if (first) g.moved = Math.max(g.moved, Math.hypot(e.clientX - first[0], e.clientY - first[1]));
+    if (g.moved >= G.tapMaxMovePx && !g.lifted) { g.lifted = true; setLifted(g.id); }
     const snapRot = (r) => {
       const step = Math.PI / 2, near = Math.round(r / step) * step;
       return Math.abs(r - near) < (G.rotationSnapDeg * Math.PI) / 180 ? near : r;
@@ -869,10 +879,14 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
     g.pts.delete(e.pointerId);
     if (g.pts.size) { snapshot(g.id, g); return; } // one finger lifted mid-pinch: keep going with the other
     gesture.current = null;
+    clearTimeout(liftTimer.current);
+    setLifted(null);
     setGuides({ v: false, h: false });
     setTrash({ show: false, hot: false });
     if (g.hot && !g.multi) { removeObject(g.id); buzz(); return; }
-    const isTap = g.mode === "move" && !(G.pinchLocksOutTap && g.multi) && g.moved < G.tapMaxMovePx && performance.now() - g.t0 < G.tapMaxMs;
+    const isTap =
+      g.mode === "move" && !g.lifted && !(G.pinchLocksOutTap && g.multi) &&
+      g.moved < G.tapMaxMovePx && performance.now() - g.t0 < G.tapMaxMs;
     if (isTap) {
       const o = objRef.current.find((x) => x.id === g.id);
       if (o?.type === "text") setEditing({ ...o });
@@ -970,7 +984,7 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
       const ctx = out.getContext("2d");
       ctx.drawImage(baseRef.current, 0, 0);
       ctx.drawImage(inkRef.current, 0, 0);
-      objects.forEach((o) => paintObject(ctx, o));
+      [...objects].sort((a, b) => (a.z || 1) - (b.z || 1)).forEach((o) => paintObject(ctx, o));
       const rich = photo || music;
       let data = rich ? out.toDataURL("image/jpeg", 0.88) : out.toDataURL("image/png");
       if (data.length > 1_400_000) data = out.toDataURL("image/jpeg", 0.82);
@@ -1034,8 +1048,9 @@ export default function Editor({ k, base, startWith, partner, onClose, onSent })
               {objects.map((o) => (
                 <div
                   key={o.id}
-                  className={`obj obj-${o.type} ${selected === o.id ? "sel" : ""}`}
+                  className={`obj obj-${o.type} ${selected === o.id ? "sel" : ""} ${lifted === o.id ? "lifted" : ""}`}
                   style={{
+                    zIndex: o.z || 1,
                     left: `${(o.x / SIZE) * 100}%`,
                     top: `${(o.y / SIZE) * 100}%`,
                     transform: `translate(-50%, -50%) rotate(${o.rot}rad) scale(${o.scale})`,
