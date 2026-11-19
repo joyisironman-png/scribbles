@@ -103,13 +103,20 @@ function polaroid(parent, img, size, name, date, big) {
   n.lineLimit = 1;
   cap.addSpacer();
   if (date) {
-    const d = cap.addDate(date);
-    d.applyRelativeStyle(); // keeps "5 min" ticking on its own
+    const d = cap.addText(clock(date));
     d.font = Font.mediumSystemFont(big ? 11 : 8.5);
     d.textColor = SOFT;
     d.lineLimit = 1;
   }
   row.addSpacer();
+}
+
+// "12:02 am" today, "Tue 9:41 pm" otherwise. Static, so no ticking seconds.
+function clock(d) {
+  const df = new DateFormatter();
+  const today = new Date().toDateString() === d.toDateString();
+  df.dateFormat = today ? "h:mm a" : "EEE h:mm a";
+  return df.string(d).toLowerCase();
 }
 
 function message(w, title, sub) {
@@ -186,8 +193,7 @@ module.exports.run = async function (MY_LINK) {
     a.font = new Font("Georgia-BoldItalic", 19);
     a.textColor = INK;
     col.addSpacer(3);
-    const t = col.addDate(when);
-    t.applyRelativeStyle();
+    const t = col.addText(clock(when));
     t.font = Font.mediumSystemFont(12);
     t.textColor = SOFT;
     col.addSpacer(10);
