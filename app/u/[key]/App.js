@@ -296,6 +296,12 @@ export default function App({ k, me, partner }) {
         </div>
       )}
 
+      {platform === "ios" && widgetDone && (
+        <button className="link recopy" disabled={!widgetScript} onClick={copyWidgetScript}>
+          Copy widget script again
+        </button>
+      )}
+
       {platform === "ios" && !widgetDone && (
         <section className="widget-card">
           <h3>Put {partner.name}&apos;s doodles on your home screen</h3>

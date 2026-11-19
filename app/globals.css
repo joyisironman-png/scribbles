@@ -255,3 +255,4 @@ button:disabled { opacity: 0.35; cursor: default; }
 .widget-card li span { display: block; margin-bottom: 8px; }
 .small-btn { height: 42px; width: 100%; font-size: 14px; border-radius: 13px; }
 .widget-card .link { margin: 0; padding: 4px 0; }
+.recopy { display: block; margin: 16px auto 0; }
