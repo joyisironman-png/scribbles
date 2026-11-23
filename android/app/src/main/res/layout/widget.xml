@@ -12,6 +12,12 @@
         android:layout_height="match_parent"
         android:background="@drawable/paper_tile" />
 
+    <!-- theme colour laid over the paper grain -->
+    <FrameLayout
+        android:id="@+id/tint"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <!-- the polaroid always fits whole, whatever the widget's shape -->
     <ImageView
         android:id="@+id/image"

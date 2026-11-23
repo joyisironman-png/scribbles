@@ -76,6 +76,7 @@ final class Store {
         boolean has = j.optBoolean("has", false);
         String fromName = j.optString("fromName", "");
         p.edit().putString("fromName", fromName).apply();
+        saveTheme(c, j.optJSONObject("theme"));
         maybeRemind(c, j, fromName);
 
         if (!has) {
@@ -117,6 +118,26 @@ final class Store {
                 .apply();
         return true;
     }
+
+    /** Theme colours picked in Scribbles (the widget follows them). */
+    private static void saveTheme(Context c, JSONObject t) {
+        if (t == null) return;
+        prefs(c).edit()
+                .putString("thPaper", t.optString("paper", "#F6EFE3"))
+                .putString("thCard", t.optString("card", "#FFFDF8"))
+                .putString("thInk", t.optString("ink", "#1F1B18"))
+                .putString("thSoft", t.optString("soft", "#7A6E62"))
+                .putString("thTape", t.optString("tape", "#F2C94C"))
+                .putBoolean("thDark", t.optBoolean("dark", false))
+                .apply();
+    }
+
+    static int color(Context c, String key, String fallback) {
+        try { return android.graphics.Color.parseColor(prefs(c).getString(key, fallback)); }
+        catch (Exception e) { return android.graphics.Color.parseColor(fallback); }
+    }
+
+    static boolean dark(Context c) { return prefs(c).getBoolean("thDark", false); }
 
     /** End-to-end key (from the Scribbles app on this phone). Never sent anywhere. */
     static void setKey(Context c, String code) {

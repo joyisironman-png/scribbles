@@ -16,20 +16,24 @@ final class Polaroid {
     private Polaroid() {}
 
     static Bitmap render(Bitmap doodle, String name, String time) {
+        return render(doodle, name, time, Color.parseColor("#FFFDF8"), Color.parseColor("#1F1B18"), Color.parseColor("#7A6E62"), Color.parseColor("#F2C94C"), false);
+    }
+
+    static Bitmap render(Bitmap doodle, String name, String time, int cardColor, int inkColor, int softColor, int tapeColor, boolean dark) {
         Bitmap out = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         RectF card = new RectF(14, 16, W - 14, H - 22);
 
         // soft edge underneath
         Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        shadow.setColor(Color.parseColor("#FFFDF8"));
+        shadow.setColor(cardColor);
         shadow.setShadowLayer(16, 0, 7, Color.argb(70, 74, 51, 32));
         c.drawRoundRect(card, 26, 26, shadow);
 
         Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
         edge.setStyle(Paint.Style.STROKE);
         edge.setStrokeWidth(1.5f);
-        edge.setColor(Color.argb(22, 0, 0, 0));
+        edge.setColor(dark ? Color.argb(30, 255, 255, 255) : Color.argb(22, 0, 0, 0));
         c.drawRoundRect(card, 26, 26, edge);
 
         // the doodle, rounded
@@ -53,7 +57,7 @@ final class Polaroid {
         tape.lineTo(cx - 66, ty + 30);
         tape.close();
         Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
-        tp.setColor(Color.argb(165, 242, 201, 76));
+        tp.setColor(Color.argb(165, Color.red(tapeColor), Color.green(tapeColor), Color.blue(tapeColor)));
         c.drawPath(tape, tp);
         Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
         stripe.setColor(Color.argb(50, 255, 255, 255));
@@ -68,12 +72,12 @@ final class Polaroid {
         Paint np = new Paint(Paint.ANTI_ALIAS_FLAG);
         np.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC));
         np.setTextSize(28);
-        np.setColor(Color.parseColor("#1F1B18"));
+        np.setColor(inkColor);
         c.drawText(name == null ? "" : name, pic.left + 4, base, np);
         Paint tpaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         tpaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL));
         tpaint.setTextSize(19);
-        tpaint.setColor(Color.parseColor("#7A6E62"));
+        tpaint.setColor(softColor);
         tpaint.setTextAlign(Paint.Align.RIGHT);
         c.drawText(time == null ? "" : time, pic.right - 4, base, tpaint);
         return out;

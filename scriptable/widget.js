@@ -85,8 +85,12 @@ function b64uBytes(s) {
   return new Uint8Array(out);
 }
 
-const INK = new Color("#1F1B18");
-const SOFT = new Color("#7A6E62");
+// Colours come from the theme picked in Scribbles (sent with the widget data).
+let INK = new Color("#1F1B18");
+let SOFT = new Color("#7A6E62");
+let CARD = "#FFFDF8";
+let TAPE = "#F2C94C";
+let DARK = false;
 const CREAM = "#FBF6EC";
 
 function mix(a, b, t) {
@@ -106,17 +110,17 @@ function paper(tint) {
   dc.fillRect(new Rect(0, 0, W, H));
   for (let i = 0; i < 16; i++) {
     const r = W * (1.5 - i * 0.07);
-    dc.setFillColor(new Color("#FFFFFF", 0.04));
+    dc.setFillColor(new Color("#FFFFFF", DARK ? 0.008 : 0.04));
     dc.fillEllipse(new Rect(-r * 0.42, -r * 0.5, r, r));
   }
   for (let i = 0; i < 12; i++) {
     const r = W * (1.6 - i * 0.05);
-    dc.setFillColor(new Color("#5A3E25", 0.012));
+    dc.setFillColor(new Color(DARK ? "#000000" : "#5A3E25", DARK ? 0.02 : 0.012));
     dc.fillEllipse(new Rect(W - r * 0.35, H - r * 0.3, r, r));
   }
   for (let i = 0; i < 3200; i++) {
     const s = Math.random() * 1.5 + 0.5;
-    dc.setFillColor(new Color(Math.random() < 0.55 ? "#3B2A1A" : "#FFFFFF", Math.random() * 0.06));
+    dc.setFillColor(new Color(Math.random() < 0.55 ? "#3B2A1A" : "#FFFFFF", Math.random() * 0.07));
     dc.fillRect(new Rect(Math.random() * W, Math.random() * H, s, s));
   }
   dc.setLineWidth(0.8);
@@ -143,7 +147,7 @@ function taped(img) {
   t.addLines([new Point(S / 2 - 92, -6), new Point(S / 2 + 98, 6), new Point(S / 2 + 92, 52), new Point(S / 2 - 98, 40)]);
   t.closeSubpath();
   dc.addPath(t);
-  dc.setFillColor(new Color("#F2C94C", 0.62));
+  dc.setFillColor(new Color(TAPE, 0.62));
   dc.fillPath();
   for (let i = 0; i < 9; i++) {
     const s = new Path();
@@ -168,10 +172,10 @@ function polaroid(parent, img, size, name, date, big) {
   shadow.setPadding(0, 0, big ? 3 : 2, big ? 2 : 1);
   const card = shadow.addStack();
   card.layoutVertically();
-  card.backgroundColor = new Color("#FFFDF8");
+  card.backgroundColor = new Color(CARD);
   card.cornerRadius = big ? 21 : 14;
   card.borderWidth = 1;
-  card.borderColor = new Color("#FFFFFF", 0.9);
+  card.borderColor = DARK ? new Color("#FFFFFF", 0.1) : new Color("#FFFFFF", 0.9);
   const pad = big ? 10 : 6;
   card.setPadding(pad, pad, big ? 9 : 5, pad);
   const pic = card.addImage(img);
@@ -267,7 +271,10 @@ module.exports.run = async function (MY_LINK) {
     d = fm.fileExists(cacheMeta) ? JSON.parse(fm.readString(cacheMeta)) : null; // offline: show the last one
   }
 
-  const tint = d && d.bg && d.bg !== "#1E2233" ? mix(d.bg, CREAM, 0.55) : "#F6EFE3";
+  const th = d && d.theme;
+  if (th) { INK = new Color(th.ink); SOFT = new Color(th.soft); CARD = th.card; TAPE = th.tape; DARK = Boolean(th.dark); }
+  const base = th ? th.paper : "#F6EFE3";
+  const tint = d && d.bg && d.bg !== "#1E2233" && !(th && th.dark) ? mix(d.bg, base, 0.6) : base;
   w.backgroundImage = paper(tint);
 
   if (!d) {

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { GESTURES as G } from "@/lib/gestures";
 import { getKey, lockImage, lockJSON, unlockJSON } from "@/lib/e2e";
 import { describeSong, topArtists } from "@/lib/songs";
+import { Camera, EmojiGrid } from "./ui";
 
 /*
   The Scribbles editor, Instagram-story style:
@@ -534,6 +535,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     setRecents(loadRecents());
     FONTS.forEach((f) => document.fonts?.load?.(f.css.replace("{s}", 40)).catch(() => {}));
     if (startWith === "library") setTimeout(() => libRef.current?.click(), 250);
+    if (startWith === "camera") setTimeout(() => openCamera(), 150);
     const el = wrapRef.current;
     const stop = (e) => { if (!e.target.closest("textarea,input")) e.preventDefault(); };
     el.addEventListener("touchstart", stop, { passive: false });
@@ -769,37 +771,48 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
   }
 
   /*
-    Gestures (rules in lib/gestures.js):
-    one finger drags, two fingers pinch & twist (second finger can land anywhere),
-    a clean tap on text opens it, dragging onto the bin deletes.
+    Gestures (rules in lib/gestures.js), Instagram-style:
+    - one finger drags, two fingers pinch & twist (the second finger can land anywhere)
+    - while your fingers move, the item is moved on screen directly (no page re-render) so it
+      tracks smoothly; the new position is saved once you let go
+    - editing is deliberate: the first tap selects, a tap on the already-selected text (or ✎) edits.
+      Drags, pinches, holds and interrupted touches never open the editor.
   */
-  const [guides, setGuides] = useState({ v: false, h: false });
-  const [lifted, setLifted] = useState(null);
-  const liftTimer = useRef(0);
   const zTop = useRef(1);
-  const [trash, setTrash] = useState({ show: false, hot: false });
+  const guideV = useRef(null), guideH = useRef(null), trashRef = useRef(null);
+  const [busy, setBusy] = useState(false); // hides the little ✎ / 🗑 bar while you're moving something
   const buzz = () => navigator.vibrate?.(G.hapticMs);
 
-  function snapshot(id, g) {
-    g.start = { ...objRef.current.find((x) => x.id === id), pts: new Map(g.pts) };
+  function snapshot(g) {
+    const cur = g.cur || objRef.current.find((x) => x.id === g.id);
+    g.start = { ...cur, pts: new Map(g.pts) };
   }
+  function paint(g, v) {
+    g.cur = { ...g.cur, ...v };
+    const el = g.el;
+    if (!el) return;
+    el.style.left = `${(g.cur.x / SIZE) * 100}%`;
+    el.style.top = `${(g.cur.y / SIZE) * 100}%`;
+    el.style.transform = `translate(-50%, -50%) rotate(${g.cur.rot}rad) scale(${g.cur.scale})`;
+  }
+  const show = (ref, on, cls = "show") => ref.current?.classList.toggle(cls, on);
 
   function objDown(e, o, mode = "move") {
     e.stopPropagation();
     e.preventDefault();
-    setSelected(o.id);
-    // bring to front (a z number, so the pressed element never moves in the page mid-gesture)
+    const wasSelected = selected === o.id;
+    const el = e.currentTarget.closest(".obj");
     zTop.current += 1;
-    updateObject(o.id, { z: zTop.current });
+    if (el) el.style.zIndex = zTop.current; // bring to front without a re-render
     try { wrapRef.current.setPointerCapture(e.pointerId); } catch (_) {}
-    const g = { kind: "obj", id: o.id, mode, pts: new Map([[e.pointerId, [e.clientX, e.clientY]]]), t0: performance.now(), moved: 0, multi: false, snap: {} };
-    snapshot(o.id, g);
+    const g = {
+      kind: "obj", id: o.id, mode, el, wasSelected, z: zTop.current,
+      pts: new Map([[e.pointerId, [e.clientX, e.clientY]]]), t0: performance.now(), moved: 0, multi: false, snap: {},
+      cur: { x: o.x, y: o.y, scale: o.scale, rot: o.rot },
+    };
+    snapshot(g);
     gesture.current = g;
-    // after a short hold the item lifts into move mode (and a release won't open the editor)
-    clearTimeout(liftTimer.current);
-    liftTimer.current = setTimeout(() => {
-      if (gesture.current === g) { g.lifted = true; setLifted(o.id); buzz(); }
-    }, G.liftAfterMs);
+    if (!wasSelected) setSelected(o.id);
   }
 
   // A second finger anywhere on the picture joins the current move as a pinch.
@@ -811,8 +824,8 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     try { wrapRef.current.setPointerCapture(e.pointerId); } catch (_) {}
     g.pts.set(e.pointerId, [e.clientX, e.clientY]);
     g.multi = true;
-    setTrash({ show: false, hot: false });
-    snapshot(g.id, g);
+    show(trashRef, false); show(trashRef, false, "hot");
+    snapshot(g);
   }
 
   function wrapMove(e) {
@@ -824,7 +837,8 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     const ids = [...g.pts.keys()];
     const first = st.pts.get(ids[0]);
     if (first) g.moved = Math.max(g.moved, Math.hypot(e.clientX - first[0], e.clientY - first[1]));
-    if (g.moved >= G.tapMaxMovePx && !g.lifted) { g.lifted = true; setLifted(g.id); }
+    if (g.moved < G.tapMaxMovePx && !g.multi && g.mode === "move") return; // tiny wobble: not a move yet
+    if (!g.active) { g.active = true; g.el?.classList.add("lifted"); setBusy(true); }
     const snapRot = (r) => {
       const step = Math.PI / 2, near = Math.round(r / step) * step;
       return Math.abs(r - near) < (G.rotationSnapDeg * Math.PI) / 180 ? near : r;
@@ -836,8 +850,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
       const p0 = st.pts.get(ids[0]), p1 = g.pts.get(ids[0]);
       const d0 = Math.hypot(p0[0] - cx, p0[1] - cy) || 1, d1 = Math.hypot(p1[0] - cx, p1[1] - cy);
       const a0 = Math.atan2(p0[1] - cy, p0[0] - cx), a1 = Math.atan2(p1[1] - cy, p1[0] - cx);
-      updateObject(g.id, { scale: clamp(st.scale * (d1 / d0), G.minScale, G.maxScale), rot: snapRot(st.rot + a1 - a0) });
-      return;
+      return paint(g, { scale: clamp(st.scale * (d1 / d0), G.minScale, G.maxScale), rot: snapRot(st.rot + a1 - a0) });
     }
     if (ids.length === 1 && !g.multi) {
       const p0 = st.pts.get(ids[0]), p1 = g.pts.get(ids[0]);
@@ -849,18 +862,17 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
       if (sh) y = SIZE / 2;
       if ((sv && !g.snap.v) || (sh && !g.snap.h)) buzz();
       g.snap = { v: sv, h: sh };
-      setGuides({ v: sv, h: sh });
-      // the bin
+      show(guideV, sv); show(guideH, sh);
       if (g.moved > G.trashShowAfterPx) {
         const r = wrapRef.current.getBoundingClientRect();
         const fx = (p1[0] - r.left) / u, fy = (p1[1] - r.top) / u;
         const hot = Math.hypot(fx - SIZE / 2, fy - G.trashY) < G.trashRadius;
         if (hot && !g.hot) buzz();
         g.hot = hot;
-        setTrash({ show: true, hot });
+        show(trashRef, true); show(trashRef, hot, "hot");
+        g.el?.classList.toggle("doomed", hot);
       }
-      updateObject(g.id, { x, y });
-      return;
+      return paint(g, { x, y });
     }
     if (ids.length >= 2) {
       const [i, j] = ids;
@@ -869,7 +881,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
       const d0 = Math.hypot(b0[0] - a0[0], b0[1] - a0[1]) || 1, d1 = Math.hypot(b1[0] - a1[0], b1[1] - a1[1]);
       const ang0 = Math.atan2(b0[1] - a0[1], b0[0] - a0[0]), ang1 = Math.atan2(b1[1] - a1[1], b1[0] - a1[0]);
       const m0 = mid(a0, b0), m1 = mid(a1, b1);
-      updateObject(g.id, {
+      paint(g, {
         scale: clamp(st.scale * (d1 / d0), G.minScale, G.maxScale),
         rot: snapRot(st.rot + ang1 - ang0),
         x: clamp(st.x + (m1[0] - m0[0]) / u, 0, SIZE),
@@ -882,17 +894,19 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     const g = gesture.current;
     if (g?.kind !== "obj" || !g.pts.has(e.pointerId)) return;
     g.pts.delete(e.pointerId);
-    if (g.pts.size) { snapshot(g.id, g); return; } // one finger lifted mid-pinch: keep going with the other
+    if (g.pts.size) { snapshot(g); return; } // one finger lifted mid-pinch: carry on with the other
     gesture.current = null;
-    clearTimeout(liftTimer.current);
-    setLifted(null);
-    setGuides({ v: false, h: false });
-    setTrash({ show: false, hot: false });
+    g.el?.classList.remove("lifted", "doomed");
+    show(guideV, false); show(guideH, false); show(trashRef, false); show(trashRef, false, "hot");
+    setBusy(false);
     if (g.hot && !g.multi) { removeObject(g.id); buzz(); return; }
+    if (g.active) { updateObject(g.id, { ...g.cur, z: g.z }); return; } // save where it ended up
+    updateObject(g.id, { z: g.z });
+    // A tap: only a real lift of the finger counts (an interrupted touch never does).
     const isTap =
-      g.mode === "move" && !g.lifted && !(G.pinchLocksOutTap && g.multi) &&
+      e.type === "pointerup" && g.mode === "move" && !(G.pinchLocksOutTap && g.multi) &&
       g.moved < G.tapMaxMovePx && performance.now() - g.t0 < G.tapMaxMs;
-    if (isTap) {
+    if (isTap && g.wasSelected) {
       const o = objRef.current.find((x) => x.id === g.id);
       if (o?.type === "text") setEditing({ ...o });
     }
@@ -980,8 +994,22 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     return { list: list.slice(0, 30), artists: topArtists(songs) };
   }, [songs, songTab, artist, me]);
   const music = objects.find((o) => o.type === "music");
+  const selectedObj = objects.find((o) => o.id === selected);
 
   /* photo */
+  // iPhone's own camera ignores our settings (it opened with flash), so iPhone/iPad/Mac use the
+  // in-app camera. The Android app keeps the phone's camera app, which works well there.
+  const [camOpen, setCamOpen] = useState(false);
+  function openCamera() {
+    if (window.ScribblesAndroid || !navigator.mediaDevices?.getUserMedia) camRef.current?.click();
+    else setCamOpen(true);
+  }
+  function applyPhoto(img) {
+    setPhoto({ img, ox: 0, oy: 0, z: 1 });
+    setFilter("none");
+    setTool("photo");
+  }
+
   async function onPick(e) {
     const f = e.target.files?.[0];
     e.target.value = "";
@@ -1108,7 +1136,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
               {objects.map((o) => (
                 <div
                   key={o.id}
-                  className={`obj obj-${o.type} ${selected === o.id ? "sel" : ""} ${lifted === o.id ? "lifted" : ""}`}
+                  className={`obj obj-${o.type} ${selected === o.id ? "sel" : ""}`}
                   style={{
                     zIndex: o.z || 1,
                     left: `${(o.x / SIZE) * 100}%`,
@@ -1120,31 +1148,32 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                 >
                   <ObjectView o={o} u={u} />
                   {selected === o.id && (
-                    <>
-                      <button
-                        className="obj-del"
-                        style={{ transform: `scale(${1 / o.scale})` }}
-                        onPointerDown={(e) => { e.stopPropagation(); removeObject(o.id); }}
-                        aria-label="Remove"
-                      >
-                        ✕
-                      </button>
-                      <span
-                        className="obj-handle"
-                        style={{ transform: `scale(${1 / o.scale})` }}
-                        onPointerDown={(e) => objDown(e, o, "handle")}
-                        aria-label="Resize and turn"
-                      >
-                        ⤡
-                      </span>
-                    </>
+                    <span
+                      className="obj-handle"
+                      style={{ transform: `scale(${1 / o.scale})` }}
+                      onPointerDown={(e) => objDown(e, o, "handle")}
+                      aria-label="Resize and turn"
+                    >
+                      ⤡
+                    </span>
                   )}
                 </div>
               ))}
             </div>
-            {guides.v && <span className="guide v" />}
-            {guides.h && <span className="guide h" />}
-            <div className={`trash ${trash.show ? "show" : ""} ${trash.hot ? "hot" : ""}`} aria-hidden="true">🗑</div>
+            {/* the little bar above the selected item: ✎ edit (text) and 🗑 delete */}
+            {selectedObj && !busy && tool !== "draw" && (
+              <div
+                className="sel-bar"
+                style={{ left: `${(selectedObj.x / SIZE) * 100}%`, top: `${(selectedObj.y / SIZE) * 100}%` }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {selectedObj.type === "text" && <button onClick={() => setEditing({ ...selectedObj })}>✎ Edit</button>}
+                <button onClick={() => removeObject(selectedObj.id)} aria-label="Delete">🗑</button>
+              </div>
+            )}
+            <span ref={guideV} className="guide v" />
+            <span ref={guideH} className="guide h" />
+            <div ref={trashRef} className="trash" aria-hidden="true">🗑</div>
           </div>
         </div>
 
@@ -1202,13 +1231,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
             )}
 
             {tool === "sticker" && (
-              <div className="sticker-grid">
-                {STICKERS.map((st) => (
-                  <button key={st} className="sticker" onClick={() => addObject({ type: "sticker", emoji: st, x: SIZE / 2 + (Math.random() - 0.5) * 200, y: SIZE / 2 + (Math.random() - 0.5) * 200 })}>
-                    {st}
-                  </button>
-                ))}
-              </div>
+              <EmojiGrid compact onPick={(st) => addObject({ type: "sticker", emoji: st, x: SIZE / 2 + (Math.random() - 0.5) * 200, y: SIZE / 2 + (Math.random() - 0.5) * 200 })} />
             )}
 
             {tool === "music" && (
@@ -1280,7 +1303,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                 <div className="row">
                   <div className="photo-btns left">
                     <button className="chip" onClick={() => libRef.current?.click()}>🖼 {photo ? "Change photo" : "Choose photo"}</button>
-                    {touchy && <button className="chip" onClick={() => camRef.current?.click()}>📷 Camera</button>}
+                    {touchy && <button className="chip" onClick={openCamera}>📷 Camera</button>}
                     {photo && <button className="chip" onClick={() => setPhoto(null)}>Remove</button>}
                   </div>
                 </div>
@@ -1333,6 +1356,8 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
           </button>
         </div>
       </div>
+
+      {camOpen && <Camera onClose={() => setCamOpen(false)} onShot={(img) => { setCamOpen(false); applyPhoto(img); }} />}
 
       {editing && (
         <TextEditor

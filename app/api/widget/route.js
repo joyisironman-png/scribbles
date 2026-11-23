@@ -1,5 +1,6 @@
 import { auth, json } from "@/lib/api";
-import { latestFor, getImage, dayOf, sentOn, remindOn } from "@/lib/store";
+import { latestFor, getImage, dayOf, sentOn, remindOn, getTheme } from "@/lib/store";
+import { widgetPalette } from "@/lib/themes";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,7 @@ export async function GET(req) {
     createdAt: d?.createdAt ?? null,
     bg: d?.bg ?? null,
     e2e: Boolean(d?.e2e),
+    theme: widgetPalette(await getTheme(a.me.id)),
     image: d ? `${origin}/api/image/${d.id}?k=${encodeURIComponent(k)}` : null,
     app: `${origin}/u/${encodeURIComponent(k)}`,
     // Used by the Android app for its own 8 pm reminder.

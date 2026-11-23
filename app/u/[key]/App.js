@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DrawSheet, { SIZE } from "./Editor";
 import { getKey, setKey, newKey, fingerprint, unlockBytes, lockBytes, lockJSON, unlockJSON, toB64, validCode, cleanCode } from "@/lib/e2e";
-import { findLink, describeSong } from "@/lib/songs";
+import { findLink, describeSong, topArtists } from "@/lib/songs";
+import { THEMES, themeOf } from "@/lib/themes";
+import { EmojiSheet, EmojiGrid, ReactionPop, useTouchActions, rememberEmoji } from "./ui";
 
 /* Pictures are fetched, unlocked on this device when they're end-to-end encrypted, and shown from memory. */
 const KREF = { k: "" };
@@ -88,7 +90,13 @@ export default function App({ k, me, partner, build }) {
   const [toast, setToast] = useState("");
   const [push, setPush] = useState("checking");
   const [vapid, setVapid] = useState(null);
-  const [tab, setTab] = useState("today");
+  const [tab, setTab] = useState("home"); // home | album | songs | you
+  const [theme, setThemeId] = useState("cream");
+  const [creating, setCreating] = useState(false);
+  const [replying, setReplying] = useState(null); // doodle being replied to
+  const [holding, setHolding] = useState(null); // { d, reply? } for the reaction popover
+  const [picker, setPicker] = useState(null); // { onPick } for the full emoji sheet
+  const [songs, setSongs] = useState([]);
   const [remind, setRemind] = useState(true);
   const [platform, setPlatform] = useState("web"); // web | ios | android-app
   const [widgetScript, setWidgetScript] = useState("");
@@ -117,9 +125,15 @@ export default function App({ k, me, partner, build }) {
         const key = getKey();
         // Song details on locked doodles are unlocked here, on this device.
         const open = await Promise.all(
-          list.map(async (d) =>
-            d.music?.enc ? { ...d, music: key ? await unlockJSON(key, d.music.enc).catch(() => null) : null } : d
-          )
+          list.map(async (d) => {
+            const music = d.music?.enc ? (key ? await unlockJSON(key, d.music.enc).catch(() => null) : null) : d.music;
+            const replies = await Promise.all(
+              (d.replies || []).map(async (r) =>
+                r.enc ? { ...r, text: key ? (await unlockJSON(key, r.enc).catch(() => null))?.text ?? "🔒" : "🔒" } : r
+              )
+            );
+            return { ...d, music, replies };
+          })
         );
         setDoodles(open);
       }
@@ -152,6 +166,7 @@ export default function App({ k, me, partner, build }) {
         const j = await r.json();
         setVapid(j.vapidPublicKey);
         setRemind(j.remind !== false);
+        if (j.theme) applyTheme(j.theme, false);
         vapidOk = Boolean(j.vapidPublicKey);
         await checkE2E(j.e2e);
       } catch (_) {}
@@ -207,6 +222,57 @@ export default function App({ k, me, partner, build }) {
       flash("Couldn't turn on notifications");
     }
   }
+
+  /* ───── themes ───── */
+  function applyTheme(id, save = true) {
+    const t = themeOf(id);
+    setThemeId(t.id);
+    const r = document.documentElement.style;
+    r.setProperty("--paper", t.bg); r.setProperty("--card", t.card); r.setProperty("--ink", t.ink);
+    r.setProperty("--soft", t.soft); r.setProperty("--accent", t.accent); r.setProperty("--chip", t.chip);
+    r.setProperty("--chip2", t.chip2); r.setProperty("--g1", t.g1); r.setProperty("--g2", t.g2); r.setProperty("--tapec", t.tape);
+    r.setProperty("--line", t.dark ? "rgba(255,255,255,.10)" : "rgba(31,27,24,.09)");
+    document.documentElement.dataset.dark = t.dark ? "1" : "";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t.bg);
+    try { localStorage.setItem("scribbles-theme", t.id); } catch (_) {}
+    if (save) fetch("/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, theme: t.id }) }).then(() => {
+      try { window.ScribblesAndroid?.refreshWidget?.(); } catch (_) {}
+    });
+  }
+  useEffect(() => {
+    try { const t = localStorage.getItem("scribbles-theme"); if (t) applyTheme(t, false); } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ───── replies ───── */
+  async function sendReply(d, text) {
+    const t = text.trim();
+    if (!t) return;
+    const key = getKey();
+    const body = key ? { k, id: d.id, enc: await lockJSON(key, { text: t }) } : { k, id: d.id, text: t };
+    const local = { id: "tmp" + Date.now(), from: me.id, at: Date.now(), text: t, reactions: {} };
+    setDoodles((list) => list.map((x) => (x.id === d.id ? { ...x, replies: [...(x.replies || []), local] } : x)));
+    const r = await fetch("/api/replies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) flash("Couldn't send that reply");
+    load();
+  }
+  async function reactReply(d, rep, emoji) {
+    const next = rep.reactions?.[me.id] === emoji ? "" : emoji;
+    setDoodles((list) => list.map((x) => (x.id === d.id ? { ...x, replies: x.replies.map((r) => (r.id === rep.id ? { ...r, reactions: { ...(r.reactions || {}), [me.id]: next || undefined } } : r)) } : x)));
+    await fetch("/api/replies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, id: d.id, replyId: rep.id, emoji: next }) });
+  }
+
+  /* ───── song library (for the Songs tab) ───── */
+  const loadSongs = useCallback(async () => {
+    const key = getKey();
+    if (!key) return;
+    try {
+      const j = await (await fetch(`/api/songs?k=${encodeURIComponent(k)}`)).json();
+      const open = await Promise.all((j.songs || []).map((x) => unlockJSON(key, x.enc).then((s) => ({ ...s, by: x.by, at: x.at })).catch(() => null)));
+      setSongs(open.filter(Boolean));
+    } catch (_) {}
+  }, [k]);
+  useEffect(() => { if (tab === "songs" && e2e.state === "on") loadSongs(); }, [tab, e2e.state, loadSongs]);
 
   async function toggleRemind() {
     const next = !remind;
@@ -292,6 +358,7 @@ export default function App({ k, me, partner, build }) {
       const song = { ...describeSong({ ...j, url }), by: me.id, at: Date.now() };
       await fetch("/api/songs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ k, enc: await lockJSON(key, song) }) });
       setShared(song);
+      setSongs((list) => [song, ...list]);
     } catch (_) {
       flash("Couldn't save that song");
     }
@@ -354,6 +421,9 @@ export default function App({ k, me, partner, build }) {
     flash(`Sent to ${partner.name} ✓`);
   }
 
+  const openViewer = (d) => setViewing({ list: doodles, i: doodles.indexOf(d) });
+  const holdDoodle = (d) => setHolding({ d });
+
   return (
     <div className="app">
       <header className="top">
@@ -361,180 +431,147 @@ export default function App({ k, me, partner, build }) {
           <span className="brand-mark">✎</span>
           <span className="brand-name">Scribbles</span>
         </div>
-        <div className="with">
-          with <b>{partner.name}</b>
-        </div>
-      </header>
-
-      <nav className="tabs">
-        <button className={tab === "today" ? "on" : ""} onClick={() => setTab("today")}>Today</button>
-        <button className={tab === "album" ? "on" : ""} onClick={() => setTab("album")}>
-          Album{doodles?.length ? <span className="count">{doodles.length}</span> : null}
+        <button className="with" onClick={() => setTab("you")}>
+          with <b>{partner.name}</b>{e2e.state === "on" && <span className="lock-dot" title="End-to-end encrypted">🔒</span>}
         </button>
-      </nav>
-
-      {tab === "album" && <Album doodles={doodles} me={me} partner={partner} img={img} open={(list, i) => setViewing({ list, i })} />}
+      </header>
 
       {e2e.state === "locked" && <UnlockGate partner={partner} onUnlock={unlock} />}
 
-      {e2e.state === "off" && (
-        <section className="lock-card">
-          <div className="lock-ico">🔒</div>
-          <div>
-            <b>Make it just the two of you</b>
-            <p>Lock every doodle, photo and song on your phones before it's uploaded. The servers only ever see scrambled data.</p>
-          </div>
-          <button className="btn primary small-btn" onClick={turnOnE2E}>Turn on</button>
-        </section>
-      )}
+      <main className="screen">
+        {tab === "home" && (
+          <>
+            {e2e.state === "off" && (
+              <section className="lock-card">
+                <div className="lock-ico">🔒</div>
+                <div>
+                  <b>Make it just the two of you</b>
+                  <p>Lock every doodle, photo, song and reply on your phones before it&apos;s uploaded.</p>
+                </div>
+                <button className="btn primary small-btn" onClick={turnOnE2E}>Turn on</button>
+              </section>
+            )}
+            {(push === "off" || push === "native-off") && (
+              <button className="nudge" onClick={enablePush}>
+                <span className="nudge-dot" />
+                Get a ping when {partner.name} draws something
+                <span className="nudge-cta">Turn on</span>
+              </button>
+            )}
+            {push === "install-first" && (
+              <div className="nudge static">
+                <span className="nudge-dot" />
+                For pings, tap <b>&nbsp;Share → Add to Home Screen&nbsp;</b> and open Scribbles from there.
+              </div>
+            )}
 
-      {tab === "today" && <>
+            {doodles === null && <div className="feed"><div className="card skeleton-card" /></div>}
+            {doodles?.length === 0 && (
+              <div className="empty-feed">
+                <p className="empty-title">Nothing yet</p>
+                <p className="muted">Tap ＋ to draw something for {partner.name}. It lands on their home screen.</p>
+              </div>
+            )}
+            {doodles?.length > 0 && (
+              <div className="feed">
+                {doodles.slice(0, 40).map((d) => (
+                  <FeedCard
+                    key={d.id}
+                    d={d}
+                    me={me}
+                    partner={partner}
+                    onOpen={() => openViewer(d)}
+                    onHold={() => holdDoodle(d)}
+                    onHeart={() => { if (d.reactions?.[me.id] !== "❤️") react(d, "❤️"); }}
+                    onReply={() => setReplying(d)}
+                    onHoldReply={(r) => setHolding({ d, reply: r })}
+                  />
+                ))}
+                {doodles.length > 40 && <button className="link recopy" onClick={() => setTab("album")}>See all {doodles.length} in the album →</button>}
+              </div>
+            )}
+          </>
+        )}
 
-      {(push === "off" || push === "native-off") && (
-        <button className="nudge" onClick={enablePush}>
-          <span className="nudge-dot" />
-          Get a ping when {partner.name} draws something
-          <span className="nudge-cta">Turn on</span>
-        </button>
-      )}
-      {push === "install-first" && (
-        <div className="nudge static">
-          <span className="nudge-dot" />
-          For pings, tap <b>&nbsp;Share → Add to Home Screen&nbsp;</b> and open Scribbles from there.
-        </div>
-      )}
+        {tab === "album" && <Album doodles={doodles} me={me} partner={partner} img={img} open={(list, i) => setViewing({ list, i })} />}
 
-      <section className="hero">
-        <div className="hero-label">
-          <span>From {partner.name}</span>
-          {received && <span className="muted">{ago(received.createdAt)}</span>}
-        </div>
+        {tab === "songs" && (
+          <SongsPage
+            songs={songs}
+            me={me}
+            partner={partner}
+            platform={platform}
+            locked={e2e.state !== "on"}
+            onSend={(song) => setDrawing({ base: null, music: song })}
+            onAdd={async (url) => { await saveSong(url); }}
+            k={k}
+            flash={flash}
+          />
+        )}
 
-        {doodles === null ? (
-          <div className="frame skeleton" />
-        ) : received ? (
-          <div className="frame tilt" role="button" onClick={() => setViewing({ list: doodles, i: doodles.indexOf(received) })} aria-label="Open doodle">
-            <span className="tape" />
-            <div className="pic">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <Pic id={received.id} alt={`Doodle from ${partner.name}`} />
-              <MusicSpot d={received} />
-              <Reacts d={received} me={me} partner={partner} />
+        {tab === "you" && (
+          <YouPage
+            me={me}
+            partner={partner}
+            theme={theme}
+            onTheme={applyTheme}
+            push={push}
+            onPush={enablePush}
+            remind={remind}
+            onRemind={toggleRemind}
+            e2e={e2e}
+            onE2E={turnOnE2E}
+            onShowCode={() => setShowCode(true)}
+            platform={platform}
+            widgetScript={widgetScript}
+            onCopyWidget={copyWidgetScript}
+            k={k}
+            flash={flash}
+          />
+        )}
+      </main>
+
+      <nav className="tabbar">
+        <button className={tab === "home" ? "on" : ""} onClick={() => setTab("home")}><span className="ti">⌂</span><span>Home</span></button>
+        <button className={tab === "album" ? "on" : ""} onClick={() => setTab("album")}><span className="ti">▦</span><span>Album</span></button>
+        <button className="fab" onClick={() => setCreating(true)} aria-label="Create">＋</button>
+        <button className={tab === "songs" ? "on" : ""} onClick={() => setTab("songs")}><span className="ti">♫</span><span>Songs</span></button>
+        <button className={tab === "you" ? "on" : ""} onClick={() => setTab("you")}><span className="ti">☺</span><span>You</span></button>
+      </nav>
+
+      {creating && (
+        <div className="sheet-backdrop" onClick={() => setCreating(false)}>
+          <div className="bottom-sheet create" onClick={(e) => e.stopPropagation()}>
+            <div className="grabber" />
+            <p className="bs-kicker">Something for {partner.name}</p>
+            <div className="create-grid">
+              <button onClick={() => { setCreating(false); setDrawing({ base: null }); }}><span>✎</span><b>Draw</b></button>
+              <button onClick={() => { setCreating(false); setDrawing({ base: null, startWith: "library" }); }}><span>🖼</span><b>Photo</b></button>
+              <button onClick={() => { setCreating(false); setDrawing({ base: null, startWith: "camera" }); }}><span>📷</span><b>Camera</b></button>
             </div>
           </div>
-        ) : (
-          <div className="frame empty">
-            <p className="empty-title">Nothing yet</p>
-            <p className="muted">When {partner.name} draws something, it lands here and on your home screen.</p>
-          </div>
-        )}
-
-        <div className="hero-actions">
-          <button className="btn primary" onClick={() => setDrawing({ base: null })}>
-            Draw something
-          </button>
-          <button className="btn ghost" onClick={() => setDrawing({ base: null, startWith: "library" })}>
-            Send a photo
-          </button>
-        </div>
-
-        {sent && (
-          <div className="sent-line">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <Pic id={sent.id} alt="" />
-            <span>
-              Your last one · {ago(sent.createdAt)} ·{" "}
-              <b className={sent.seenAt ? "seen" : ""}>{sent.seenAt ? `seen ${ago(sent.seenAt)}` : "delivered"}</b>
-            </span>
-          </div>
-        )}
-      </section>
-
-      {doodles?.length > 0 && (
-        <section className="wall">
-          <h2>
-            Recently <button className="link" onClick={() => setTab("album")}>Open album →</button>
-          </h2>
-          <div className="grid">
-            {doodles.slice(0, 6).map((d, i) => (
-              <button
-                key={d.id}
-                className={`polaroid ${d.from === me.id ? "mine" : "theirs"}`}
-                style={{ "--r": `${((i * 37) % 7) - 3}deg` }}
-                onClick={() => setViewing({ list: doodles, i })}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <Pic id={d.id} alt="" loading="lazy" />
-                <span className="who">{d.from === me.id ? "you" : partner.name}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <button className="remind-row" onClick={toggleRemind}>
-        <span>
-          <b>Evening reminder</b>
-          <span className="muted">One ping at 8 pm, only on days you haven&apos;t sent anything{push !== "on" ? ". Turn on notifications first." : "."}</span>
-        </span>
-        <span className={`switch ${remind ? "on" : ""}`} aria-label={remind ? "On" : "Off"} />
-      </button>
-
-      {e2e.state === "on" && (
-        <button className="link recopy" onClick={() => setShowCode(true)}>🔒 End-to-end encrypted · show unlock code</button>
-      )}
-
-      {platform === "android-app" && (
-        <div className="phone-row">
-          <button className="btn ghost" onClick={() => window.ScribblesAndroid.addWidget()}>Add widget</button>
-          <button className="btn ghost" onClick={() => window.ScribblesAndroid.openSettings()}>App settings</button>
         </div>
       )}
 
-      {platform === "ios" && e2e.state === "on" && (
-        <details className="shortcut-card">
-          <summary>♫ Save songs from YouTube Music&apos;s Share button</summary>
-          <ol>
-            <li>Open the <b>Shortcuts</b> app → <b>+</b>. Tap the ⓘ at the bottom and switch on <b>Show in Share Sheet</b>.</li>
-            <li>Add the action <b>Text</b>, then paste this:
-              <button className="btn primary small-btn" onClick={() => {
-                try {
-                  navigator.clipboard.writeText(`${location.origin}/u/${k}?share=SONG#e=${getKey()}`);
-                  flash("Copied. Paste it into the Text action");
-                } catch (_) {}
-              }}>Copy shortcut link</button>
-            </li>
-            <li>In that text, select the word <b>SONG</b> and replace it with the <b>Shortcut Input</b> variable.</li>
-            <li>Add the action <b>Open URLs</b>. Name the shortcut <b>Scribbles</b>.</li>
-          </ol>
-          <p className="muted">Now in YouTube Music: Share → Scribbles. The song is saved (locked) to your songs.</p>
-        </details>
+      {replying && <ReplyBar d={replying} partner={partner} onClose={() => setReplying(null)} onSend={(t) => { sendReply(replying, t); setReplying(null); }} />}
+
+      {holding && (
+        <ReactionPop
+          mine={holding.reply ? holding.reply.reactions?.[me.id] : holding.d.reactions?.[me.id]}
+          onClose={() => setHolding(null)}
+          onPick={(e) => { holding.reply ? reactReply(holding.d, holding.reply, e) : react(holding.d, e); setHolding(null); }}
+          onMore={() => { const h = holding; setHolding(null); setPicker({ onPick: (e) => (h.reply ? reactReply(h.d, h.reply, e) : react(h.d, e)) }); }}
+          onReply={() => { const d = holding.d; setHolding(null); setReplying(d); }}
+          extra={!holding.reply && (
+            <>
+              <button onClick={async () => { const d = holding.d; setHolding(null); setDrawing({ base: await picURL(d.id) }); }}>✎ Draw on it</button>
+              <button onClick={() => { const d = holding.d; setHolding(null); openViewer(d); }}>⤢ Open</button>
+            </>
+          )}
+        />
       )}
 
-      {platform === "ios" && widgetDone && (
-        <button className="link recopy" disabled={!widgetScript} onClick={copyWidgetScript}>
-          Copy widget script again
-        </button>
-      )}
-
-      {platform === "ios" && !widgetDone && (
-        <section className="widget-card">
-          <h3>Put {partner.name}&apos;s doodles on your home screen</h3>
-          <ol>
-            <li>
-              <span>Copy your widget script. Your link is already inside it.</span>
-              <button className="btn primary small-btn" disabled={!widgetScript} onClick={copyWidgetScript}>Copy widget script</button>
-            </li>
-            <li>Get the free <b>Scriptable</b> app from the App Store. Open it, tap <b>+</b>, paste, and name the script <b>Scribbles</b> at the top.</li>
-            <li>Long-press your home screen → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b>. Choose the square size and add it.</li>
-            <li>Long-press the new widget → <b>Edit Widget</b>. Set <b>Script</b> to Scribbles and <b>When Interacting</b> to Open URL.</li>
-          </ol>
-          <button className="link" onClick={() => { setWidgetDone(true); try { localStorage.setItem("scribbles-widget-done", "1"); } catch (_) {} }}>
-            Done, hide this
-          </button>
-        </section>
-      )}
-      </>}
+      {picker && <EmojiSheet onPick={picker.onPick} onClose={() => setPicker(null)} />}
 
       {viewing && (
         <Viewer
@@ -546,6 +583,8 @@ export default function App({ k, me, partner, build }) {
           partner={partner}
           onClose={() => setViewing(null)}
           onReact={react}
+          onMore={(d) => setPicker({ onPick: (e) => react(d, e) })}
+          onReply={(d) => { setViewing(null); setReplying(d); }}
           onDrawOn={async (d) => {
             setDrawing({ base: await picURL(d.id) });
             setViewing(null);
@@ -577,10 +616,251 @@ export default function App({ k, me, partner, build }) {
   );
 }
 
+/* ───────────────────────── Home feed ───────────────────────── */
+
+function FeedCard({ d, me, partner, onOpen, onHold, onHeart, onReply, onHoldReply }) {
+  const mine = d.from === me.id;
+  const [heart, setHeart] = useState(false);
+  const like = () => { onHeart(); setHeart(true); navigator.vibrate?.(12); setTimeout(() => setHeart(false), 800); };
+  const { ref, handlers } = useTouchActions({ onTap: onOpen, onHold, onDoubleTap: like, onSwipe: onReply });
+  return (
+    <article className={`card ${mine ? "mine" : "theirs"}`}>
+      <div className="card-meta">
+        <b>{mine ? "You" : partner.name}</b>
+        <span className="muted">{ago(d.createdAt)}{mine && (d.seenAt ? " · seen" : " · delivered")}</span>
+      </div>
+      <div className="card-body">
+        <span className="swipe-hint">↩︎</span>
+        <div
+          ref={ref}
+          className="card-pic"
+          {...handlers}
+          onDoubleClick={like}
+        >
+          <Pic id={d.id} alt="" decoding="async" draggable={false} />
+          <MusicSpot d={d} />
+          <Reacts d={d} me={me} partner={partner} />
+          {heart && <span className="heart-burst">❤️</span>}
+        </div>
+      </div>
+      {d.replies?.length > 0 && (
+        <div className="replies">
+          {d.replies.slice(-6).map((r) => (
+            <ReplyBubble key={r.id} r={r} mine={r.from === me.id} name={r.from === me.id ? "You" : partner.name} onHold={() => onHoldReply(r)} />
+          ))}
+          {d.replies.length > 6 && <p className="muted more-replies">{d.replies.length - 6} earlier replies, open to see all</p>}
+        </div>
+      )}
+      <div className="card-actions">
+        <button onClick={onReply}>↩︎ Reply</button>
+        <button onClick={onHold}>☺ React</button>
+      </div>
+    </article>
+  );
+}
+
+function ReplyBubble({ r, mine, name, onHold }) {
+  const { ref, handlers } = useTouchActions({ onHold });
+  const reacts = Object.values(r.reactions || {}).filter(Boolean);
+  return (
+    <div className={`bubble-row ${mine ? "mine" : ""}`}>
+      <div ref={ref} className={`bubble ${/^\p{Extended_Pictographic}{1,3}$/u.test(r.text || "") ? "big-emoji" : ""}`} {...handlers}>
+        <span className="bubble-text">{r.text}</span>
+        <span className="bubble-time">{new Date(r.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }).toLowerCase()}</span>
+        {reacts.length > 0 && <span className="bubble-reacts">{reacts.join("")}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ReplyBar({ d, partner, onSend, onClose }) {
+  const [t, setT] = useState("");
+  const [emoji, setEmoji] = useState(false);
+  const input = useRef(null);
+  return (
+    <div className="sheet-backdrop light" onClick={onClose}>
+      <div className="reply-bar" onClick={(e) => e.stopPropagation()}>
+        <div className="rb-quote">
+          <Pic id={d.id} alt="" />
+          <span>Replying to {d.from === partner.id ? `${partner.name}'s` : "your"} doodle</span>
+          <button className="icon-btn" onClick={onClose} aria-label="Cancel">✕</button>
+        </div>
+        <div className="rb-row">
+          <button className="icon-btn" onClick={() => setEmoji(!emoji)} aria-label="Emoji">{emoji ? "⌨︎" : "☺"}</button>
+          <textarea
+            ref={input}
+            autoFocus
+            rows={1}
+            value={t}
+            onChange={(e) => setT(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(t); } }}
+            placeholder="Write a reply…"
+          />
+          <button className="send-round" disabled={!t.trim()} onClick={() => onSend(t)} aria-label="Send">➤</button>
+        </div>
+        {emoji && <EmojiGrid compact onPick={(e) => setT((x) => x + e)} />}
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Songs tab ───────────────────────── */
+
+function SongsPage({ songs, me, partner, platform, locked, onSend, onAdd, k, flash }) {
+  const [who, setWho] = useState("all");
+  const [artist, setArtist] = useState(null);
+  const [link, setLink] = useState("");
+  const list = useMemo(() => {
+    const seen = new Set();
+    return songs
+      .slice()
+      .sort((a, b) => (b.at || 0) - (a.at || 0))
+      .filter((s) => who === "all" || (who === "mine" ? s.by === me.id : s.by !== me.id))
+      .filter((s) => !artist || s.artist === artist)
+      .filter((s) => (seen.has(s.vid) ? false : seen.add(s.vid)));
+  }, [songs, who, artist, me.id]);
+  const artists = useMemo(() => topArtists(songs, 10), [songs]);
+  if (locked) {
+    return (
+      <section className="page">
+        <h2 className="page-title">Songs</h2>
+        <p className="muted">Turn on end-to-end encryption (on Home) to start your song library. Songs are saved locked, like everything else.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="page">
+      <h2 className="page-title">Songs</h2>
+      <p className="muted page-sub">
+        {platform === "android-app" ? "In YouTube Music, tap Share → Scribbles to save what you're playing." : platform === "ios" ? "Set up the Share shortcut in You → Songs from YouTube Music." : "Paste a YouTube or YouTube Music link to save it."}
+      </p>
+      <div className="link-row">
+        <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Paste a YouTube Music link" inputMode="url" autoCapitalize="off" />
+        <button className="chip on" disabled={!link} onClick={async () => { await onAdd(link); setLink(""); }}>Save</button>
+      </div>
+      <div className="seg">
+        {[["all", "Both"], ["mine", "You"], ["theirs", partner.name]].map(([v, l]) => (
+          <button key={v} className={who === v ? "on" : ""} onClick={() => setWho(v)}>{l}</button>
+        ))}
+      </div>
+      {artists.length > 1 && (
+        <div className="artist-chips">
+          {artists.map((a) => (
+            <button key={a.name} className={`chip ${artist === a.name ? "on" : ""}`} onClick={() => setArtist(artist === a.name ? null : a.name)}>
+              {a.name} <span className="muted">{a.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="song-list page-list">
+        {!list.length && <p className="muted">No songs yet.</p>}
+        {list.map((x) => (
+          <div key={x.vid + x.at} className="song-row big">
+            <span className="mini-record" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${x.vid}/default.jpg)` }} />
+            <span className="sr-text">
+              <b>{x.title}</b>
+              <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(" · ")}</span>
+              <span className="sr-by">{x.by === me.id ? "you" : partner.name} · {ago(x.at)}</span>
+            </span>
+            <button className="chip" onClick={() => onSend(x)}>Send ♫</button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────────── You tab (settings) ───────────────────────── */
+
+function YouPage({ me, partner, theme, onTheme, push, onPush, remind, onRemind, e2e, onE2E, onShowCode, platform, widgetScript, onCopyWidget, k, flash }) {
+  return (
+    <section className="page">
+      <h2 className="page-title">{me.name} <span className="muted">&amp; {partner.name}</span></h2>
+
+      <h3 className="group-title">Theme</h3>
+      <div className="themes">
+        {THEMES.map((t) => (
+          <button key={t.id} className={`theme-swatch ${theme === t.id ? "on" : ""}`} onClick={() => onTheme(t.id)} style={{ "--a": t.bg, "--b": t.accent, "--c": t.card }}>
+            <span className="ts-dot" />
+            <span className="ts-name">{t.name}</span>
+          </button>
+        ))}
+      </div>
+      <p className="muted small-note">Your widget follows your theme too.</p>
+
+      <h3 className="group-title">Notifications</h3>
+      <div className="settings">
+        <button className="set-row" onClick={onPush} disabled={push === "on"}>
+          <span><b>Pings</b><span className="muted">{push === "on" ? "On" : push === "install-first" ? "Add Scribbles to your Home Screen first" : "When " + partner.name + " sends or replies"}</span></span>
+          <span className={`switch ${push === "on" ? "on" : ""}`} />
+        </button>
+        <button className="set-row" onClick={onRemind}>
+          <span><b>Evening reminder</b><span className="muted">8 pm, only on days you haven&apos;t sent anything</span></span>
+          <span className={`switch ${remind ? "on" : ""}`} />
+        </button>
+      </div>
+
+      <h3 className="group-title">Privacy</h3>
+      <div className="settings">
+        {e2e.state === "on" ? (
+          <button className="set-row" onClick={onShowCode}>
+            <span><b>🔒 End-to-end encrypted</b><span className="muted">Show the unlock code for a new device</span></span>
+            <span className="chev">›</span>
+          </button>
+        ) : (
+          <button className="set-row" onClick={onE2E}>
+            <span><b>End-to-end encryption</b><span className="muted">Off. Tap to lock everything on your phones</span></span>
+            <span className="chev">›</span>
+          </button>
+        )}
+      </div>
+
+      <h3 className="group-title">Home-screen widget</h3>
+      <div className="settings">
+        {platform === "android-app" && (
+          <>
+            <button className="set-row" onClick={() => window.ScribblesAndroid.addWidget()}><span><b>Add the widget</b><span className="muted">Shows {partner.name}&apos;s latest doodle</span></span><span className="chev">›</span></button>
+            <button className="set-row" onClick={() => window.ScribblesAndroid.openSettings()}><span><b>App settings</b><span className="muted">Link, refresh, battery tips</span></span><span className="chev">›</span></button>
+          </>
+        )}
+        {platform === "ios" && (
+          <details className="set-row details">
+            <summary><span><b>Set up the widget</b><span className="muted">Uses the free Scriptable app</span></span><span className="chev">›</span></summary>
+            <ol>
+              <li>Copy your widget script (your link and unlock code are inside): <button className="btn primary small-btn" disabled={!widgetScript} onClick={onCopyWidget}>Copy widget script</button></li>
+              <li>In <b>Scriptable</b>, tap <b>+</b>, paste, and name it <b>Scribbles</b>. If it already exists, replace all its text.</li>
+              <li>Long-press the home screen → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b>, choose a square.</li>
+              <li>Long-press the widget → <b>Edit Widget</b> → Script: Scribbles · When Interacting: Open URL.</li>
+            </ol>
+          </details>
+        )}
+        {platform === "web" && <p className="muted small-note">Widgets live on phones: the Android app, or Scriptable on iPhone.</p>}
+      </div>
+
+      {platform === "ios" && e2e.state === "on" && (
+        <>
+          <h3 className="group-title">Songs from YouTube Music</h3>
+          <details className="set-row details">
+            <summary><span><b>Add Scribbles to the Share menu</b><span className="muted">A one-time Shortcut</span></span><span className="chev">›</span></summary>
+            <ol>
+              <li>Open <b>Shortcuts</b> → <b>+</b>. Tap ⓘ and switch on <b>Show in Share Sheet</b>.</li>
+              <li>Add a <b>Text</b> action and paste:{" "}
+                <button className="btn primary small-btn" onClick={() => { try { navigator.clipboard.writeText(`${location.origin}/u/${k}?share=SONG#e=${getKey()}`); flash("Copied. Paste it into the Text action"); } catch (_) {} }}>Copy shortcut link</button>
+              </li>
+              <li>Select the word <b>SONG</b> and replace it with <b>Shortcut Input</b>.</li>
+              <li>Add <b>Open URLs</b>. Name it <b>Scribbles</b>.</li>
+            </ol>
+          </details>
+        </>
+      )}
+      <p className="muted small-note center">Scribbles · made for {me.name} &amp; {partner.name}</p>
+    </section>
+  );
+}
+
 /* ───────────────────────── Viewer ───────────────────────── */
 
-function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact }) {
-  const [more, setMore] = useState(false);
+function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact, onMore, onReply }) {
   const d = list[i];
   const mine = d.from === me.id;
   const touch = useRef(null);
@@ -645,11 +925,23 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact })
             {list.length > 1 && ` · ${i + 1} of ${list.length}`}
           </span>
         </div>
-        <ReactBar d={d} me={me} more={more} setMore={setMore} onReact={(e) => onReact(d, e)} />
+        <ReactBar d={d} me={me} onMore={() => onMore(d)} onReact={(e) => onReact(d, e)} />
+        {d.replies?.length > 0 && (
+          <div className="replies viewer-replies">
+            {d.replies.map((r) => (
+              <div key={r.id} className={`bubble-row ${r.from === me.id ? "mine" : ""}`}>
+                <div className="bubble"><span className="bubble-text">{r.text}</span>
+                  {Object.values(r.reactions || {}).some(Boolean) && <span className="bubble-reacts">{Object.values(r.reactions).filter(Boolean).join("")}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="viewer-actions">
-          <button className="btn primary" onClick={() => onDrawOn(d)}>Draw on this</button>
+          <button className="btn primary" onClick={() => onReply(d)}>↩︎ Reply</button>
+          <button className="btn ghost" onClick={() => onDrawOn(d)}>✎ Draw on</button>
           <button className="btn ghost" onClick={share}>Save</button>
-          <button className="btn ghost" onClick={onClose}>Close</button>
+          <button className="btn ghost" onClick={onClose}>✕</button>
         </div>
       </div>
     </div>
@@ -840,26 +1132,19 @@ function Reacts({ d, me, partner }) {
   );
 }
 
-function ReactBar({ d, me, more, setMore, onReact }) {
+function ReactBar({ d, me, onMore, onReact }) {
   const mine = d.reactions?.[me.id];
   let recent = [];
-  try { recent = JSON.parse(localStorage.getItem("scribbles-recent-react") || "[]"); } catch (_) {}
-  const quick = [...new Set([...recent, ...QUICK_REACTS])].slice(0, 7);
+  try { recent = JSON.parse(localStorage.getItem("scribbles-recent-emoji") || "[]"); } catch (_) {}
+  const quick = [...new Set([...recent.slice(0, 2), ...QUICK_REACTS])].slice(0, 7);
   return (
     <div className="react-bar">
       <div className="react-row">
         {quick.map((e) => (
-          <button key={e} className={`emo ${mine === e ? "on" : ""}`} onClick={() => onReact(e)} aria-label={`React ${e}`}>{e}</button>
+          <button key={e} className={`emo ${mine === e ? "on" : ""}`} onClick={() => { rememberEmoji(e); onReact(e); }} aria-label={`React ${e}`}>{e}</button>
         ))}
-        <button className={`emo more ${more ? "on" : ""}`} onClick={() => setMore(!more)} aria-label="More reactions">＋</button>
+        <button className="emo more" onClick={onMore} aria-label="More reactions">＋</button>
       </div>
-      {more && (
-        <div className="react-more">
-          {MORE_REACTS.map((e) => (
-            <button key={e} className={`emo ${mine === e ? "on" : ""}`} onClick={() => { onReact(e); setMore(false); }}>{e}</button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

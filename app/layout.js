@@ -1,4 +1,5 @@
 import "./globals.css";
+import { THEMES } from "@/lib/themes";
 
 export const metadata = {
   title: "Scribbles",
@@ -18,8 +19,14 @@ export const viewport = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Apply the saved theme before anything is drawn (no flash of the default colours). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var T=${JSON.stringify(Object.fromEntries(THEMES.map((t) => [t.id, t])))};var t=T[localStorage.getItem("scribbles-theme")];if(t){var r=document.documentElement.style;[["--paper",t.bg],["--card",t.card],["--ink",t.ink],["--soft",t.soft],["--accent",t.accent],["--chip",t.chip],["--chip2",t.chip2],["--g1",t.g1],["--g2",t.g2],["--tapec",t.tape],["--line",t.dark?"rgba(255,255,255,.10)":"rgba(31,27,24,.09)"]].forEach(function(p){r.setProperty(p[0],p[1])});if(t.dark)document.documentElement.dataset.dark="1";}}catch(e){}`,
+          }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link

@@ -63,9 +63,18 @@ public class ScribbleWidget extends AppWidgetProvider {
         v.setOnClickPendingIntent(R.id.refresh, PendingIntent.getBroadcast(c, 2, refresh,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
 
+        // Theme: tint the paper and colour the text to match the app.
+        int paper = Store.color(c, "thPaper", "#F6EFE3");
+        int alpha = Store.dark(c) ? 0xF0 : 0xA8;
+        v.setInt(R.id.tint, "setBackgroundColor", (alpha << 24) | (paper & 0x00FFFFFF));
+        v.setTextColor(R.id.empty_title, Store.color(c, "thInk", "#1F1B18"));
+        v.setTextColor(R.id.empty_text, Store.color(c, "thSoft", "#7A6E62"));
+
         Bitmap bmp = Store.hasDoodle(c) ? Store.loadBitmap(c) : null;
         if (bmp != null) {
-            v.setImageViewBitmap(R.id.image, Polaroid.render(bmp, Store.fromName(c), time(Store.createdAt(c))));
+            v.setImageViewBitmap(R.id.image, Polaroid.render(bmp, Store.fromName(c), time(Store.createdAt(c)),
+                    Store.color(c, "thCard", "#FFFDF8"), Store.color(c, "thInk", "#1F1B18"),
+                    Store.color(c, "thSoft", "#7A6E62"), Store.color(c, "thTape", "#F2C94C"), Store.dark(c)));
             v.setViewVisibility(R.id.image, View.VISIBLE);
             v.setViewVisibility(R.id.empty, View.GONE);
             v.setViewVisibility(R.id.caption, View.GONE);

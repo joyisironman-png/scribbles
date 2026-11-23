@@ -280,6 +280,14 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void refreshWidget() {
+            new Thread(() -> {
+                try { Store.fetch(getApplicationContext()); } catch (Exception ignored) {}
+                ScribbleWidget.renderAll(getApplicationContext());
+            }).start();
+        }
+
+        @JavascriptInterface
         public void addWidget() {
             runOnUiThread(MainActivity.this::pinWidget);
         }
