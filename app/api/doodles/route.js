@@ -1,5 +1,5 @@
 import { auth, json } from "@/lib/api";
-import { saveDoodle, recent } from "@/lib/store";
+import { saveDoodle, recent, getDoodle, addReply } from "@/lib/store";
 import { notify } from "@/lib/push";
 
 export const dynamic = "force-dynamic";
@@ -40,9 +40,16 @@ export async function POST(req) {
           x: Number(mu.x) || 450, y: Number(mu.y) || 450, r: Math.max(20, Math.min(450, Number(mu.r) || 90)),
         }
       : null;
-  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: img, bg, music });
+  // A picture sent as a reply to another doodle shows up in that doodle's thread too.
+  let replyTo = null;
+  if (body.replyTo) {
+    const t = await getDoodle(String(body.replyTo));
+    if (t && (t.from === a.me.id || t.to === a.me.id)) replyTo = t.id;
+  }
+  const meta = await saveDoodle({ from: a.me.id, to: a.partner.id, image: img, bg, music, replyTo });
+  if (replyTo) await addReply(replyTo, a.me.id, { kind: "doodle", doodleId: meta.id });
   await notify(a.partner.id, {
-    title: music ? `${a.me.name} sent you a doodle with a song ♫` : `${a.me.name} sent you a doodle`,
+    title: replyTo ? `${a.me.name} replied with a doodle` : music ? `${a.me.name} sent you a doodle with a song ♫` : `${a.me.name} sent you a doodle`,
     body: "Tap to see it ✏️",
     url: "/",
     id: meta.id,

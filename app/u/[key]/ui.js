@@ -159,14 +159,19 @@ export const QUICK = ["❤️", "😂", "😮", "😢", "🙏", "👍"];
 
 export function ReactionPop({ mine, onPick, onMore, onReply, extra, onClose }) {
   const quick = [...new Set([...recentEmoji().slice(0, 2), ...QUICK])].slice(0, 7);
+  // On phones, lifting the finger after a hold also "taps" whatever is now under it.
+  // Ignore taps for a moment so the popover neither closes itself nor presses a button by accident.
+  const opened = useRef(performance.now());
+  const tooSoon = () => performance.now() - opened.current < 450;
+  const guard = (e) => { if (tooSoon()) { e.stopPropagation(); e.preventDefault(); } };
   useEffect(() => {
     const k = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
   return (
-    <div className="sheet-backdrop light" onClick={onClose}>
-      <div className="react-pop" onClick={(e) => e.stopPropagation()}>
+    <div className="sheet-backdrop light" onClick={() => !tooSoon() && onClose()}>
+      <div className="react-pop" onClickCapture={guard} onClick={(e) => e.stopPropagation()}>
         <div className="rp-row">
           {quick.map((e) => (
             <button key={e} className={`rp-emo ${mine === e ? "on" : ""}`} onClick={() => { rememberEmoji(e); onPick(e); }}>{e}</button>

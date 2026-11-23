@@ -453,7 +453,8 @@ function TextEditor({ initial, onDone, onCancel, recents, onColor }) {
             lineHeight: f.lh,
             textAlign: t.align,
             color: fg,
-            background: t.style === "pill" ? t.color : "transparent",
+            // dark text on the dark editing backdrop gets a light card behind it, so you can always see what you type
+            background: t.style === "pill" ? t.color : contrastOn(fg.startsWith("#") ? fg : "#FFFFFF") === "#FFFFFF" ? "rgba(255,253,248,.92)" : "transparent",
             WebkitTextStroke: t.style === "outline" ? `${shown * 0.12}px ${contrastOn(t.color) === "#FFFFFF" ? "#fff" : "#1F1B18"}` : "0",
             textShadow: t.style === "neon" ? `0 0 ${shown * 0.3}px ${t.color}, 0 0 ${shown * 0.6}px ${t.color}` : t.style === "shadow" ? `0 ${shown * 0.06}px ${shown * 0.14}px rgba(0,0,0,.5)` : "none",
             paintOrder: "stroke fill",
@@ -483,7 +484,7 @@ const loadRecents = () => {
   try { return JSON.parse(localStorage.getItem("scribbles-recent-colors") || "[]"); } catch (_) { return []; }
 };
 
-export default function Editor({ k, me, base, startWith, initialMusic, partner, onClose, onSent }) {
+export default function Editor({ k, me, base, startWith, initialMusic, replyTo, partner, onClose, onSent }) {
   const baseRef = useRef(null);
   const inkRef = useRef(null);
   const liveRef = useRef(null);
@@ -491,7 +492,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
   const libRef = useRef(null);
   const camRef = useRef(null);
   const strokes = useRef([]);
-  const ops = useRef([]); // undo stack: {type:"stroke"} | {type:"add", id} | {type:"clear", saved}
+  const hist = useRef({ past: [], future: [] }); // undo / redo: whole-picture snapshots
   const live = useRef(null);
   const frame = useRef(0);
   const baseFrame = useRef(0);
@@ -527,6 +528,51 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
   objRef.current = objects;
   const photoRef = useRef(photo);
   photoRef.current = photo;
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const paperRef = useRef(paper);
+  paperRef.current = paper;
+
+  // Every change is recorded first, so each one can be undone and redone on its own.
+  const snap = () => ({ strokes: strokes.current, objects: objRef.current, photo: photoRef.current, filter: filterRef.current, paper: paperRef.current });
+  function record() {
+    const h = hist.current;
+    h.past.push(snap());
+    if (h.past.length > 150) h.past.shift();
+    h.future = [];
+    setCount((c) => c + 1);
+  }
+  function restore(st) {
+    strokes.current = st.strokes;
+    redraw();
+    setObjects(st.objects);
+    setPhoto(st.photo);
+    setFilter(st.filter);
+    setPaper(st.paper);
+    setSelected(null);
+    setCount((c) => c + 1);
+  }
+  function undo() {
+    const h = hist.current;
+    if (!h.past.length) return;
+    h.future.push(snap());
+    restore(h.past.pop());
+  }
+  function redo() {
+    const h = hist.current;
+    if (!h.future.length) return;
+    h.past.push(snap());
+    restore(h.future.pop());
+  }
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z" || e.target.closest?.("input,textarea")) return;
+      e.preventDefault();
+      e.shiftKey ? redo() : undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -537,7 +583,8 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     if (startWith === "library") setTimeout(() => libRef.current?.click(), 250);
     if (startWith === "camera") setTimeout(() => openCamera(), 150);
     const el = wrapRef.current;
-    const stop = (e) => { if (!e.target.closest("textarea,input")) e.preventDefault(); };
+    // Stop the page scrolling while you draw, but never block taps on buttons and text boxes.
+    const stop = (e) => { if (!e.target.closest("textarea,input,button,.sel-bar")) e.preventDefault(); };
     el.addEventListener("touchstart", stop, { passive: false });
     el.addEventListener("touchmove", stop, { passive: false });
     el.addEventListener("contextmenu", stop);
@@ -624,6 +671,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     const [x, y] = toXY(e);
 
     if (tool === "photo" && photo) {
+      if (gesture.current?.kind !== "photo") record();
       const g = gesture.current?.kind === "photo" ? gesture.current : { kind: "photo", pts: new Map() };
       g.pts.set(e.pointerId, [x, y]);
       g.start = { ...photoRef.current, pts: new Map(g.pts) };
@@ -720,15 +768,18 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     const last = s.pts[s.pts.length - 1];
     if (Math.hypot(rx - last[0], ry - last[1]) > 1) s.pts.push([rx, ry, last[2] * 0.7]);
     const { pid, pencil, t, ...stroke } = s;
+    record();
+    strokes.current = [...strokes.current, stroke];
     paintLive();
-    strokes.current.push(stroke);
-    ops.current.push({ type: "stroke" });
     redraw();
     setCount((c) => c + 1);
   }
 
+  const wheelT = useRef(0);
   function wheel(e) {
     if (tool !== "photo" || !photo) return;
+    if (performance.now() - wheelT.current > 600) record();
+    wheelT.current = performance.now();
     const z = clamp(photo.z * (e.deltaY < 0 ? 1.06 : 0.94), minZoom(photo.img), 6);
     setPhoto({ ...photo, z });
   }
@@ -740,10 +791,10 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
   };
 
   /* objects */
-  function addObject(o) {
+  function addObject(o, { recorded = false } = {}) {
     const obj = { id: uid(), x: SIZE / 2, y: SIZE / 2, scale: 1, rot: 0, ...o };
+    if (!recorded) record();
     setObjects((list) => [...list, obj]);
-    ops.current.push({ type: "add", id: obj.id });
     setSelected(obj.id);
     setCount((c) => c + 1);
     return obj;
@@ -752,6 +803,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     setObjects((list) => list.map((o) => (o.id === id ? { ...o, ...patch } : o)));
   }
   function removeObject(id) {
+    record();
     setObjects((list) => list.filter((o) => o.id !== id));
     setSelected(null);
     setCount((c) => c + 1);
@@ -762,8 +814,9 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
   function finishText(t) {
     const text = t.text.replace(/\s+$/, "");
     if (t.id) {
+      record();
       if (text) updateObject(t.id, { text, font: t.font, color: t.color, style: t.style, fs: t.fs, align: t.align });
-      else removeObject(t.id);
+      else { setObjects((list) => list.filter((o) => o.id !== t.id)); setSelected(null); }
     } else if (text) {
       addObject({ type: "text", text, font: t.font, color: t.color, style: t.style, fs: t.fs, align: t.align, x: t.x, y: t.y });
     }
@@ -815,7 +868,16 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     if (!wasSelected) setSelected(o.id);
   }
 
-  // A second finger anywhere on the picture joins the current move as a pinch.
+  // A second finger anywhere on the screen (not only on the picture) joins the move as a pinch.
+  const downRef = useRef(null);
+  downRef.current = wrapDownCapture;
+  useEffect(() => {
+    const onDown = (e) => {
+      if (gesture.current?.kind === "obj" && !wrapRef.current?.contains(e.target)) downRef.current(e);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, []);
   function wrapDownCapture(e) {
     const g = gesture.current;
     if (g?.kind !== "obj" || g.pts.has(e.pointerId) || g.mode !== "move") return;
@@ -900,7 +962,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     show(guideV, false); show(guideH, false); show(trashRef, false); show(trashRef, false, "hot");
     setBusy(false);
     if (g.hot && !g.multi) { removeObject(g.id); buzz(); return; }
-    if (g.active) { updateObject(g.id, { ...g.cur, z: g.z }); return; } // save where it ended up
+    if (g.active) { record(); updateObject(g.id, { ...g.cur, z: g.z }); return; } // save where it ended up (undoable)
     updateObject(g.id, { z: g.z });
     // A tap: only a real lift of the finger counts (an interrupted touch never does).
     const isTap =
@@ -942,6 +1004,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
 
   async function placeSong(song) {
     const thumb = await loadImg(`/api/music/thumb?id=${song.vid}`).catch(() => null);
+    record();
     setObjects((list) => list.filter((o) => o.type !== "music"));
     addObject({
       type: "music",
@@ -952,7 +1015,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
       x: SIZE * 0.7,
       y: SIZE * 0.28,
       scale: 0.85,
-    });
+    }, { recorded: true });
   }
 
   useEffect(() => {
@@ -1005,6 +1068,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     else setCamOpen(true);
   }
   function applyPhoto(img) {
+    record();
     setPhoto({ img, ox: 0, oy: 0, z: 1 });
     setFilter("none");
     setTool("photo");
@@ -1017,6 +1081,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     setErr("");
     try {
       const img = await readPhoto(f);
+      record();
       setPhoto({ img, ox: 0, oy: 0, z: 1 });
       setFilter("none");
       setTool("photo");
@@ -1029,25 +1094,16 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     const { img } = photo;
     const cover = Math.max(SIZE / img.naturalWidth, SIZE / img.naturalHeight);
     const fit = Math.min(SIZE / img.naturalWidth, SIZE / img.naturalHeight);
+    record();
     setPhoto({ ...photo, ox: 0, oy: 0, z: kind === "fill" ? 1 : fit / cover });
   }
 
-  /* undo / clear */
-  function undo() {
-    const op = ops.current.pop();
-    if (!op) return;
-    if (op.type === "stroke") { strokes.current.pop(); redraw(); }
-    else if (op.type === "add") setObjects((list) => list.filter((o) => o.id !== op.id));
-    else if (op.type === "clear") { strokes.current = op.saved; redraw(); }
-    setSelected(null);
-    setCount((c) => c + 1);
-  }
+  /* clear */
   function clearInk() {
     if (!strokes.current.length) return;
-    ops.current.push({ type: "clear", saved: strokes.current });
+    record();
     strokes.current = [];
     redraw();
-    setCount((c) => c + 1);
   }
 
   const hasContent = useMemo(
@@ -1083,6 +1139,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
           image,
           bg: base || photo ? null : paper,
           music: songPayload,
+          replyTo: replyTo || null,
         }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't send");
@@ -1101,9 +1158,10 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
     <div className="sheet">
       <div className="sheet-top">
         <button className="icon" onClick={onClose} aria-label="Close">✕</button>
-        <div className="sheet-title">for <em>{partner.name}</em></div>
+        <div className="sheet-title">{replyTo ? "↩︎ reply to " : "for "}<em>{partner.name}</em></div>
         <div className="sheet-tools">
-          <button className="icon" onClick={undo} disabled={!ops.current.length} aria-label="Undo">↶</button>
+          <button className="icon" onClick={undo} disabled={!hist.current.past.length} aria-label="Undo">↶</button>
+          <button className="icon" onClick={redo} disabled={!hist.current.future.length} aria-label="Redo">↷</button>
           <button className="icon" onClick={clearInk} disabled={!strokes.current.length} aria-label="Clear drawing">⌫</button>
           <button className="send-top" disabled={!hasContent || sending} onClick={send}>{sending ? "…" : "Send"}</button>
         </div>
@@ -1168,7 +1226,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                 onPointerDown={(e) => e.stopPropagation()}
               >
                 {selectedObj.type === "text" && <button onClick={() => setEditing({ ...selectedObj })}>✎ Edit</button>}
-                <button onClick={() => removeObject(selectedObj.id)} aria-label="Delete">🗑</button>
+                <button onClick={() => removeObject(selectedObj.id)} aria-label="Delete">🗑 Delete</button>
               </div>
             )}
             <span ref={guideV} className="guide v" />
@@ -1304,7 +1362,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                   <div className="photo-btns left">
                     <button className="chip" onClick={() => libRef.current?.click()}>🖼 {photo ? "Change photo" : "Choose photo"}</button>
                     {touchy && <button className="chip" onClick={openCamera}>📷 Camera</button>}
-                    {photo && <button className="chip" onClick={() => setPhoto(null)}>Remove</button>}
+                    {photo && <button className="chip" onClick={() => { record(); setPhoto(null); }}>Remove</button>}
                   </div>
                 </div>
                 {photo && (
@@ -1318,6 +1376,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                         max="4"
                         step="0.01"
                         value={photo.z}
+                        onPointerDown={record}
                         onChange={(e) => setPhoto({ ...photo, z: Number(e.target.value) })}
                       />
                       <span className="preview text">{Math.round(photo.z * 100)}%</span>
@@ -1328,7 +1387,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
                     </div>
                     <div className="row filters-row">
                       {FILTERS.map((f) => (
-                        <button key={f.id} className={`chip ${filter === f.id ? "on" : ""}`} onClick={() => setFilter(f.id)}>{f.name}</button>
+                        <button key={f.id} className={`chip ${filter === f.id ? "on" : ""}`} onClick={() => { if (filter !== f.id) { record(); setFilter(f.id); } }}>{f.name}</button>
                       ))}
                     </div>
                   </>
@@ -1339,7 +1398,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, partner, 
             {tool === "paper" && (
               <div className="row papers">
                 {PAPERS.map((p) => (
-                  <button key={p.c} className={`paper ${paper === p.c ? "on" : ""}`} style={{ "--c": p.c }} onClick={() => setPaper(p.c)}>
+                  <button key={p.c} className={`paper ${paper === p.c ? "on" : ""}`} style={{ "--c": p.c }} onClick={() => { if (paper !== p.c) { record(); setPaper(p.c); } }}>
                     {p.name}
                   </button>
                 ))}

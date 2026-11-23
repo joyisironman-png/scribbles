@@ -478,6 +478,8 @@ export default function App({ k, me, partner, build }) {
                   <FeedCard
                     key={d.id}
                     d={d}
+                    all={doodles}
+                    onOpenId={(id) => { const x = doodles.find((y) => y.id === id); if (x) openViewer(x); }}
                     me={me}
                     partner={partner}
                     onOpen={() => openViewer(d)}
@@ -553,7 +555,16 @@ export default function App({ k, me, partner, build }) {
         </div>
       )}
 
-      {replying && <ReplyBar d={replying} partner={partner} onClose={() => setReplying(null)} onSend={(t) => { sendReply(replying, t); setReplying(null); }} />}
+      {replying && (
+        <ReplyBar
+          d={replying}
+          partner={partner}
+          onClose={() => setReplying(null)}
+          onSend={(t) => { sendReply(replying, t); setReplying(null); }}
+          onDrawOn={async () => { const d = replying; setReplying(null); setDrawing({ base: await picURL(d.id), replyTo: d.id }); }}
+          onNew={(how) => { const d = replying; setReplying(null); setDrawing({ base: null, replyTo: d.id, startWith: how }); }}
+        />
+      )}
 
       {holding && (
         <ReactionPop
@@ -609,7 +620,7 @@ export default function App({ k, me, partner, build }) {
         </div>
       )}
 
-      {drawing && <DrawSheet k={k} me={me} base={drawing.base} initialMusic={drawing.music} startWith={drawing.startWith} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
+      {drawing && <DrawSheet k={k} me={me} base={drawing.base} initialMusic={drawing.music} startWith={drawing.startWith} replyTo={drawing.replyTo} partner={partner} onClose={() => setDrawing(null)} onSent={onSent} />}
 
       <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
     </div>
@@ -618,7 +629,8 @@ export default function App({ k, me, partner, build }) {
 
 /* ───────────────────────── Home feed ───────────────────────── */
 
-function FeedCard({ d, me, partner, onOpen, onHold, onHeart, onReply, onHoldReply }) {
+function FeedCard({ d, me, partner, all, onOpen, onOpenId, onHold, onHeart, onReply, onHoldReply }) {
+  const parent = d.replyTo ? all.find((x) => x.id === d.replyTo) : null;
   const mine = d.from === me.id;
   const [heart, setHeart] = useState(false);
   const like = () => { onHeart(); setHeart(true); navigator.vibrate?.(12); setTimeout(() => setHeart(false), 800); };
@@ -629,6 +641,12 @@ function FeedCard({ d, me, partner, onOpen, onHold, onHeart, onReply, onHoldRepl
         <b>{mine ? "You" : partner.name}</b>
         <span className="muted">{ago(d.createdAt)}{mine && (d.seenAt ? " · seen" : " · delivered")}</span>
       </div>
+      {parent && (
+        <button className="reply-quote" onClick={() => onOpenId(parent.id)}>
+          <Pic id={parent.id} alt="" />
+          <span>↩︎ replying to {parent.from === me.id ? "your" : `${partner.name}'s`} doodle</span>
+        </button>
+      )}
       <div className="card-body">
         <span className="swipe-hint">↩︎</span>
         <div
@@ -646,7 +664,7 @@ function FeedCard({ d, me, partner, onOpen, onHold, onHeart, onReply, onHoldRepl
       {d.replies?.length > 0 && (
         <div className="replies">
           {d.replies.slice(-6).map((r) => (
-            <ReplyBubble key={r.id} r={r} mine={r.from === me.id} name={r.from === me.id ? "You" : partner.name} onHold={() => onHoldReply(r)} />
+            <ReplyBubble key={r.id} r={r} mine={r.from === me.id} name={r.from === me.id ? "You" : partner.name} onHold={() => onHoldReply(r)} onOpenId={onOpenId} />
           ))}
           {d.replies.length > 6 && <p className="muted more-replies">{d.replies.length - 6} earlier replies, open to see all</p>}
         </div>
@@ -659,8 +677,20 @@ function FeedCard({ d, me, partner, onOpen, onHold, onHeart, onReply, onHoldRepl
   );
 }
 
-function ReplyBubble({ r, mine, name, onHold }) {
-  const { ref, handlers } = useTouchActions({ onHold });
+function ReplyBubble({ r, mine, name, onHold, onOpenId }) {
+  const { ref, handlers } = useTouchActions({ onHold, onTap: r.kind === "doodle" ? () => onOpenId(r.doodleId) : undefined });
+  if (r.kind === "doodle") {
+    const reacts = Object.values(r.reactions || {}).filter(Boolean);
+    return (
+      <div className={`bubble-row ${mine ? "mine" : ""}`}>
+        <div ref={ref} className="bubble pic-bubble" {...handlers}>
+          <Pic id={r.doodleId} alt="" />
+          <span className="bubble-time">{new Date(r.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }).toLowerCase()}</span>
+          {reacts.length > 0 && <span className="bubble-reacts">{reacts.join("")}</span>}
+        </div>
+      </div>
+    );
+  }
   const reacts = Object.values(r.reactions || {}).filter(Boolean);
   return (
     <div className={`bubble-row ${mine ? "mine" : ""}`}>
@@ -673,7 +703,7 @@ function ReplyBubble({ r, mine, name, onHold }) {
   );
 }
 
-function ReplyBar({ d, partner, onSend, onClose }) {
+function ReplyBar({ d, partner, onSend, onClose, onDrawOn, onNew }) {
   const [t, setT] = useState("");
   const [emoji, setEmoji] = useState(false);
   const input = useRef(null);
@@ -684,6 +714,12 @@ function ReplyBar({ d, partner, onSend, onClose }) {
           <Pic id={d.id} alt="" />
           <span>Replying to {d.from === partner.id ? `${partner.name}'s` : "your"} doodle</span>
           <button className="icon-btn" onClick={onClose} aria-label="Cancel">✕</button>
+        </div>
+        <div className="rb-pics">
+          <button onClick={onDrawOn}><span>✎</span>Draw on it</button>
+          <button onClick={() => onNew(null)}><span>＋</span>New drawing</button>
+          <button onClick={() => onNew("library")}><span>🖼</span>Photo</button>
+          <button onClick={() => onNew("camera")}><span>📷</span>Camera</button>
         </div>
         <div className="rb-row">
           <button className="icon-btn" onClick={() => setEmoji(!emoji)} aria-label="Emoji">{emoji ? "⌨︎" : "☺"}</button>
