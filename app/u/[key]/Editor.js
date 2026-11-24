@@ -1328,7 +1328,7 @@ export default function Editor({ k, me, base, startWith, initialMusic, replyTo, 
                           <span className="mini-record" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${x.vid}/default.jpg)` }} />
                           <span className="sr-text">
                             <b>{x.title}</b>
-                            <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(" · ")}</span>
+                            <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(", ")}</span>
                           </span>
                           <span className={`kind ${x.kind === "song" ? "song" : ""}`}>{x.kind === "song" ? "♫" : "▶"}</span>
                         </button>
@@ -1411,7 +1411,6 @@ export default function Editor({ k, me, base, startWith, initialMusic, replyTo, 
           {err && <p className="err">{err}</p>}
           <button className="btn primary send" disabled={!hasContent || sending} onClick={send}>
             {sending ? "Sending…" : `Send to ${partner.name}`}
-            {!sending && <span className="arrow">→</span>}
           </button>
         </div>
       </div>

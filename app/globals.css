@@ -1,16 +1,16 @@
 :root {
-  --paper: #fbf6ec;
+  --paper: #f4f4f6;
   --ink: #1f1b18;
-  --soft: #6f655b;
+  --soft: #6e6e73;
   --line: rgba(31, 27, 24, 0.09);
-  --card: #fffdf8;
+  --card: #ffffff;
   --accent: #e5484d;
   --chip: #ffffff;
   --chip2: var(--chip2);
   --g1: #fde3dc;
   --g2: #e3ecfb;
   --tapec: #f2c94c;
-  --serif: "Fraunces", Georgia, serif;
+  --serif: var(--sans);
   --sans: "Plus Jakarta Sans", -apple-system, system-ui, sans-serif;
 }
 
@@ -78,7 +78,7 @@ button:disabled { opacity: 0.35; cursor: default; }
 .frame.empty { display: grid; place-content: center; text-align: center; padding: 40px; border: 2px dashed rgba(31,27,24,0.14); background: var(--chip); box-shadow: none; }
 .empty-title { font-family: var(--serif); font-style: italic; font-size: 30px; margin: 0 0 6px; }
 .frame.empty .muted { margin: 0; line-height: 1.5; font-size: 14px; }
-.skeleton { background: linear-gradient(90deg, var(--chip2), #fbf6ec, var(--chip2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+.skeleton { background: linear-gradient(90deg, var(--chip2), var(--card), var(--chip2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 .hero-actions { display: flex; gap: 10px; margin-top: 22px; }
@@ -520,7 +520,7 @@ body.drawing, .sheet, .sheet * { -webkit-user-select: none; user-select: none; -
 .code-box { display: block; padding: 14px; border-radius: 14px; background: #1f1b18; color: #fbf6ec; font-size: 14px; word-break: break-all; -webkit-user-select: all; user-select: all; letter-spacing: .02em; }
 .code-input { width: 100%; border-radius: 14px; border: 1px solid var(--line); padding: 12px; font: inherit; font-size: 14px; resize: none; -webkit-user-select: text; user-select: text; }
 .unlock-gate { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: var(--paper); }
-.pic-loading { background: linear-gradient(90deg, var(--chip2), #fbf6ec, var(--chip2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+.pic-loading { background: linear-gradient(90deg, var(--chip2), var(--card), var(--chip2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 
 /* ===== songs ===== */
 .song-saved { width: min(420px, 100%); background: var(--card); border-radius: 26px; padding: 22px; text-align: center; box-shadow: 0 30px 80px -20px rgba(0,0,0,.5); }
@@ -737,3 +737,19 @@ html[data-dark="1"] input, html[data-dark="1"] textarea { color: var(--ink); }
 html[data-dark="1"] .brush.on span { color: rgba(0,0,0,.62); }
 html[data-dark="1"] .send-round { color: #111; }
 .ffront .mc, .ffront .mt span { color: color-mix(in srgb, var(--soft) 80%, var(--ink)); }
+
+/* ================================================================
+   Unslop pass (Nov 2026): upright sans headings instead of italic
+   serif, Caveat only for the wordmark, no colour glows behind the
+   page, no pulsing play button, no rise-in on the grid.
+   ================================================================ */
+.landing h1, .empty-title, .wall h2, .widget-card h3, .code-sheet h3, .song-saved h3, .page-title, .sheet-title {
+  font-family: var(--sans) !important; font-style: normal !important; font-weight: 700; letter-spacing: -0.02em; }
+.landing h1 { font-size: 38px; }
+.empty-title, .page-title { font-size: 26px; }
+.wall h2 { font-size: 21px; }
+.code-sheet h3, .song-saved h3 { font-size: 21px; }
+.brand-name { font-family: Caveat, "Bradley Hand", cursive !important; font-style: normal !important; font-weight: 600; font-size: 32px; letter-spacing: 0; }
+body::before { display: none !important; }
+.ms-play { animation: none !important; }
+.agrid { animation: none !important; }

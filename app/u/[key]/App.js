@@ -489,7 +489,7 @@ export default function App({ k, me, partner, build }) {
                     onHoldReply={(r) => setHolding({ d, reply: r })}
                   />
                 ))}
-                {doodles.length > 40 && <button className="link recopy" onClick={() => setTab("album")}>See all {doodles.length} in the album →</button>}
+                {doodles.length > 40 && <button className="link recopy" onClick={() => setTab("album")}>See all {doodles.length} in the album</button>}
               </div>
             )}
           </>
@@ -611,7 +611,7 @@ export default function App({ k, me, partner, build }) {
             <div className="mini-record big" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${shared.vid}/hqdefault.jpg)` }} />
             <p className="ss-kicker">♫ Saved to your songs</p>
             <h3>{shared.title}</h3>
-            <p className="muted">{[shared.artist, shared.movie && `from ${shared.movie}`, shared.kind].filter(Boolean).join(" · ")}</p>
+            <p className="muted">{[shared.artist, shared.movie && `from ${shared.movie}`, shared.kind].filter(Boolean).join(", ")}</p>
             <div className="viewer-actions">
               <button className="btn primary" onClick={() => { setDrawing({ base: null, music: shared }); setShared(null); }}>Send it to {partner.name}</button>
               <button className="btn ghost" onClick={() => setShared(null)}>Done</button>
@@ -639,7 +639,7 @@ function FeedCard({ d, me, partner, all, onOpen, onOpenId, onHold, onHeart, onRe
     <article className={`card ${mine ? "mine" : "theirs"}`}>
       <div className="card-meta">
         <b>{mine ? "You" : partner.name}</b>
-        <span className="muted">{ago(d.createdAt)}{mine && (d.seenAt ? " · seen" : " · delivered")}</span>
+        <span className="muted">{ago(d.createdAt)}{mine && (d.seenAt ? ", seen" : ", delivered")}</span>
       </div>
       {parent && (
         <button className="reply-quote" onClick={() => onOpenId(parent.id)}>
@@ -795,8 +795,8 @@ function SongsPage({ songs, me, partner, platform, locked, onSend, onAdd, k, fla
             <span className="mini-record" style={{ backgroundImage: `url(https://i.ytimg.com/vi/${x.vid}/default.jpg)` }} />
             <span className="sr-text">
               <b>{x.title}</b>
-              <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(" · ")}</span>
-              <span className="sr-by">{x.by === me.id ? "you" : partner.name} · {ago(x.at)}</span>
+              <span>{[x.artist || (x.credits || []).slice(0, 2).join(", "), x.movie && `from ${x.movie}`].filter(Boolean).join(", ")}</span>
+              <span className="sr-by">{x.by === me.id ? "you" : partner.name}, {ago(x.at)}</span>
             </span>
             <button className="chip" onClick={() => onSend(x)}>Send ♫</button>
           </div>
@@ -866,7 +866,7 @@ function YouPage({ me, partner, theme, onTheme, push, onPush, remind, onRemind, 
               <li>Copy your widget script (your link and unlock code are inside): <button className="btn primary small-btn" disabled={!widgetScript} onClick={onCopyWidget}>Copy widget script</button></li>
               <li>In <b>Scriptable</b>, tap <b>+</b>, paste, and name it <b>Scribbles</b>. If it already exists, replace all its text.</li>
               <li>Long-press the home screen → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b>, choose a square.</li>
-              <li>Long-press the widget → <b>Edit Widget</b> → Script: Scribbles · When Interacting: Open URL.</li>
+              <li>Long-press the widget → <b>Edit Widget</b> → Script: Scribbles; When Interacting: Open URL.</li>
             </ol>
           </details>
         )}
@@ -889,7 +889,7 @@ function YouPage({ me, partner, theme, onTheme, push, onPush, remind, onRemind, 
           </details>
         </>
       )}
-      <p className="muted small-note center">Scribbles · made for {me.name} &amp; {partner.name}</p>
+      <p className="muted small-note center">Scribbles, made for {me.name} &amp; {partner.name}</p>
     </section>
   );
 }
@@ -954,11 +954,11 @@ function Viewer({ list, i, setI, img, me, partner, onClose, onDrawOn, onReact, o
           )}
         </div>
         <div className="viewer-meta">
-          <b>{mine ? `You → ${partner.name}` : `${partner.name} → you`}</b>
+          <b>{mine ? `To ${partner.name}` : `From ${partner.name}`}</b>
           <span className="muted">
             {when(d.createdAt)}
-            {mine && (d.seenAt ? ` · seen ${ago(d.seenAt)}` : " · delivered")}
-            {list.length > 1 && ` · ${i + 1} of ${list.length}`}
+            {mine && (d.seenAt ? `, seen ${ago(d.seenAt)}` : ", delivered")}
+            {list.length > 1 && `, ${i + 1} of ${list.length}`}
           </span>
         </div>
         <ReactBar d={d} me={me} onMore={() => onMore(d)} onReact={(e) => onReact(d, e)} />
@@ -1136,7 +1136,7 @@ function MusicSpot({ d }) {
       className={`music-spot ready ${playing ? "playing" : ""}`}
       style={{ left: pct(m.x - m.r), top: pct(m.y - m.r), width: pct(m.r * 2) }}
       onClick={(e) => e.stopPropagation()}
-      title={`${m.title}${m.author ? " · " + m.author : ""}`}
+      title={`${m.title}${m.author ? ", " + m.author : ""}`}
     >
       <div className="ms-disc">
         <iframe
