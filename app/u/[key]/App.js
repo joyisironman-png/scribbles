@@ -390,6 +390,19 @@ export default function App({ k, me, partner, build }) {
     setTimeout(() => setToast(""), 2600);
   }
 
+  // Home feed: a picture sent as a reply already shows inside its parent's thread,
+  // so it doesn't get its own card too. Threads with new replies move to the top.
+  const feed = useMemo(() => {
+    if (!doodles) return null;
+    const byId = new Map(doodles.map((x) => [x.id, x]));
+    const threaded = (x) => {
+      const p = x.replyTo && byId.get(x.replyTo);
+      return !!p && (p.replies || []).some((r) => r.kind === "doodle" && r.doodleId === x.id);
+    };
+    const last = (x) => Math.max(x.createdAt || 0, ...(x.replies || []).map((r) => r.at || 0));
+    return doodles.filter((x) => !threaded(x)).sort((a, b) => last(b) - last(a));
+  }, [doodles]);
+
   const received = useMemo(() => doodles?.find((d) => d.to === me.id) || null, [doodles, me.id]);
   const sent = useMemo(() => doodles?.find((d) => d.from === me.id) || null, [doodles, me.id]);
 
@@ -417,7 +430,14 @@ export default function App({ k, me, partner, build }) {
 
   function onSent(d) {
     setDrawing(null);
-    setDoodles((list) => [d, ...(list || [])]);
+    setDoodles((list) => {
+      const withThread = (list || []).map((x) =>
+        d.replyTo && x.id === d.replyTo && !(x.replies || []).some((r) => r.doodleId === d.id)
+          ? { ...x, replies: [...(x.replies || []), { id: "local-" + d.id, from: me.id, at: d.createdAt || Date.now(), kind: "doodle", doodleId: d.id, reactions: {} }] }
+          : x
+      );
+      return [d, ...withThread];
+    });
     flash(`Sent to ${partner.name} ✓`);
   }
 
@@ -472,9 +492,9 @@ export default function App({ k, me, partner, build }) {
                 <p className="muted">Tap ＋ to draw something for {partner.name}. It lands on their home screen.</p>
               </div>
             )}
-            {doodles?.length > 0 && (
+            {feed?.length > 0 && (
               <div className="feed">
-                {doodles.slice(0, 40).map((d) => (
+                {feed.slice(0, 40).map((d) => (
                   <FeedCard
                     key={d.id}
                     d={d}
@@ -489,7 +509,7 @@ export default function App({ k, me, partner, build }) {
                     onHoldReply={(r) => setHolding({ d, reply: r })}
                   />
                 ))}
-                {doodles.length > 40 && <button className="link recopy" onClick={() => setTab("album")}>See all {doodles.length} in the album</button>}
+                {feed.length > 40 && <button className="link recopy" onClick={() => setTab("album")}>See all {doodles.length} in the album</button>}
               </div>
             )}
           </>
